@@ -1,0 +1,48 @@
+name: Release
+
+# A tag such as v0.2.0 publishes the addon (CurseForge, Wago, GitHub release) and attaches the companion app.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  addon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the packager reads the tags
+      - uses: BigWigsMods/packager@01e8631a69c69d7654c788d152630d5fed9e3812 # v2.7.0
+        env:
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
+
+  companion:
+    needs: addon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: companion/go.mod
+          cache: false
+      - name: Test and build
+        working-directory: companion
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go test ./...
+          flags="-s -w -X main.version=${GITHUB_REF_NAME}"
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$flags" -o dist/rookieledger-sync-linux-amd64 .
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$flags -H=windowsgui" -o dist/RookieLedgerSync.exe .
+          cd dist && sha256sum * > SHA256SUMS.txt
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file CHANGELOG.md
+          gh release upload "$GITHUB_REF_NAME" companion/dist/* --clobber

@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: RookieLedger
+## Notes: Records what the game shows about professions (recipe colours, skill-ups, disenchant results) and shares it with the guild.
+## Notes-frFR: Note ce que le jeu montre des métiers (couleur des recettes, points de compétence, résultats de désenchantement) et le partage avec la guilde.
+## Author: Rookies
+## Category-enUS: Professions
+## Category-frFR: Métiers
+## Version: @project-version@
+## SavedVariables: RookieLedgerDB
+
+Core.lua
+Record.lua
+Scan.lua
+Sync.lua

@@ -1,0 +1,5 @@
+/companion/dist/
+/data/
+/.release/
+__pycache__/
+*.pyc

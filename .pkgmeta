@@ -1,0 +1,19 @@
+# BigWigsMods/packager configuration. The addon lives in addon/RookieLedger, not at the repository root.
+package-as: RookieLedger
+
+# The packager copies the repository into RookieLedger/, then moves the addon folder up to be the package itself.
+move-folders:
+  RookieLedger/addon/RookieLedger: RookieLedger
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
+# Everything that is not the addon. LICENSE and CHANGELOG.md stay in the zip.
+ignore:
+  - companion
+  - server
+  - tests
+  - README.md
+
+enable-nolib-creation: no

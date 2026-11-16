@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: companion/go.mod
+          cache: false
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.1
+      - name: Addon and server tests
+        run: python3 -I -m unittest discover -s tests -v
+      - name: Companion tests
+        working-directory: companion
+        run: |
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
