@@ -478,9 +478,11 @@ check("the changed lines of a gather say what, not where", Record.Serialize(own,
     Record.Serialize(own, own.rev - 1))
 run(900)
 check("a gather is sent as one small message", A.pieces - sentA == 1, A.pieces - sentA)
-check("the yield reaches both peers at once, the place does not", Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own)
-    and C.db.peers[A.db.id].g[1731].n == 5 and next(C.db.peers[A.db.id].g[1731].p) == nil
-    and not Record.Serialize(own):find(";p,"))
+-- The earlier gathers are older than the hold by now, so the peers know of two gathers at this place. Not of this one.
+check("the yield reaches both peers at once, the place does not", C.db.peers[A.db.id].g[1731].n == 5
+    and C.db.peers[A.db.id].g[1731].p["1429:432:654"] == 2 and B.db.peers[A.db.id].g[1731].p["1429:432:654"] == 2
+    and C.db.peers[A.db.id].g[1731].p["1429:600:200"] == 1 and not Record.Serialize(own):find("p,1731,1429,432,654", 1, true),
+    Record.Serialize(C.db.peers[A.db.id]))
 -- Once the hold is over the places are shared: by then they do not say where the player is.
 run(Record.HOLD)
 check("places reach the peers once the hold is over", C.db.peers[A.db.id].g[1731].p["1429:432:654"] == 3
