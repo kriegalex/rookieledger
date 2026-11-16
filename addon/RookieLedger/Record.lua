@@ -21,7 +21,7 @@
 -- which is what lets guild sync send only the lines a member is missing. The server ignores both.
 --
 -- A gathering place says where the player stood. So that nobody can follow a player through guild sync, a place is
--- held back for a day after each gather there before it is sent in game:
+-- held back for an hour after each gather there before it is sent in game:
 --   hold[place line key] = the time of the last gather there (our own record only)
 -- What a vein or herb gave is sent at once; it does not say where.
 --
@@ -41,7 +41,7 @@ local MAX_LINES = 6000
 local MAX_MAP = 100000
 local MAX_PLACES = 2000       -- per kind of node: past that, gathers still count but no new place is noted
 local NEAR = 8                -- thousandths of a map: two gathers this close are the same vein or herb
-Record.HOLD = 86400           -- seconds a gathering place is kept out of guild sync after a gather there
+Record.HOLD = 3600            -- seconds a gathering place is kept out of guild sync after a gather there
 Record.MAX_REV = 1000000000   -- as the server: a change counter above this is not a real one
 Record.MAX_TEXT = 80000       -- what guild sync carries of one record (400 messages); the app uploads all of it
 
@@ -159,7 +159,7 @@ function Record.Gather(rec, node, kind, loot, map, x, y)
     end
 end
 
--- Lets the places gathered at more than a day ago into guild sync, as a change of now. True when there were any.
+-- Lets the places last gathered at longer ago than HOLD into guild sync, as a change of now. True when there were any.
 function Record.Release(rec, now)
     local any = false
     for key, since in pairs(rec.hold or {}) do

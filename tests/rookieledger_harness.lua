@@ -481,9 +481,9 @@ check("a gather is sent as one small message", A.pieces - sentA == 1, A.pieces -
 check("the yield reaches both peers at once, the place does not", Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own)
     and C.db.peers[A.db.id].g[1731].n == 5 and next(C.db.peers[A.db.id].g[1731].p) == nil
     and not Record.Serialize(own):find(";p,"))
--- A day later the places are shared: by then they do not say where the player is.
+-- Once the hold is over the places are shared: by then they do not say where the player is.
 run(Record.HOLD)
-check("places reach the peers a day later", C.db.peers[A.db.id].g[1731].p["1429:432:654"] == 3
+check("places reach the peers once the hold is over", C.db.peers[A.db.id].g[1731].p["1429:432:654"] == 3
     and C.db.peers[A.db.id].g[1731].p["1429:600:200"] == 1 and B.db.peers[A.db.id].g[1618].p["1429:100:100"] == 1
     and Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own) and next(own.hold) == nil)
 

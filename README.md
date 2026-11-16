@@ -23,8 +23,8 @@ Only numbers the game client shows you about your own professions:
 No character name, account name, realm, guild name, chat, gold or inventory is recorded. A record is named by a random
 8-digit id made on first login.
 
-**Gathering places are positions you stood at, so they are shared a day late.** What a vein or herb gave is sent to
-the guild within minutes; where you gathered it is held back for 24 hours after your last gather at that place, and
+**Gathering places are positions you stood at, so they are shared an hour late.** What a vein or herb gave is sent to
+the guild within minutes; where you gathered it is held back for an hour after your last gather at that place, and
 is sent without a time. Guild sync therefore never says where you are or just were. With `/ledger sync off` the
 places stay in your own saved file and, if you use the companion app, on the guild site.
 

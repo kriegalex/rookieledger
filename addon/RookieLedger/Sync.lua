@@ -21,7 +21,7 @@
 -- guild is not announced in another.
 --
 -- The sender of a message is a character, so a member who watches could tie a record id to a player. Gathering places
--- are therefore sent a day late (Record.Release): a record never says where its author is or just was.
+-- are therefore sent an hour late (Record.Release): a record never says where its author is or just was.
 local _, ns = ...
 
 local Sync = {}
