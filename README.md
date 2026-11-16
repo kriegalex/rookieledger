@@ -20,6 +20,8 @@ Only numbers the game client shows you about your own professions:
 No character name, account name, realm, guild name, chat, gold, inventory or location is recorded. A record is named
 by a random 8-digit id made on first login.
 
+A record only grows: a skill range widens, a count goes up. Nothing in it is ever lowered or removed.
+
 ## The addon
 
 Install it from CurseForge or Wago with any addon manager, or unzip the release into
@@ -32,7 +34,13 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 | `/ledger sync on` or `off` | Turns guild sync on or off |
 
 **Guild sync.** Guild members who run the addon exchange their records on the guild addon channel, which no player
-sees. It is throttled well under the game's message limit. `/ledger sync off` stops all sending and receiving.
+sees. After a change only the changed lines are sent, the queue stays well under the game's message limit and waits
+during encounters and battlegrounds. Records received in one guild are not passed on in another.
+`/ledger sync off` stops all sending and receiving.
+
+Guild sync cannot prove who wrote a record: a guild member could send a made-up one under another member's id. The
+author's addon notices and sends the real one again, and on the site an author's own upload always wins over a copy
+relayed by someone else.
 
 The addon is free, its code is readable, and it shows no advertising, as Blizzard's add-on policy requires.
 
@@ -43,7 +51,9 @@ that file and uploads it.
 
 1. Download `RookieLedgerSync.exe` (Windows) or `rookieledger-sync-linux-amd64` (Linux) from the
    [latest release](../../releases/latest).
-2. Windows: double-click it. It has no window; it sets itself to start with your session and runs in the background.
+2. Windows: double-click it. It has no window: it copies itself to `%LocalAppData%\RookieLedgerSync`, sets that copy
+   to start with your session and runs in the background, so the downloaded file can be deleted. To update, download
+   the new version and double-click it.
    Linux: `chmod +x rookieledger-sync-linux-amd64 && ./rookieledger-sync-linux-amd64 --install` (a systemd user unit).
 3. In game, type `/ledger token` and give the token to your guild's ledger keeper. Uploads start once the keeper has
    registered it.
@@ -55,11 +65,11 @@ block unsigned programs with no bypass.
 
 | Option | What it does |
 |---|---|
-| `--status` | Prints the saved files found and their tokens, then exits |
+| `--status` | Shows the saved files found, their tokens and why the site refused a file, then exits |
 | `--once` | One pass, then exits |
-| `--install` / `--uninstall` | Adds or removes the start with your session |
-| `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself |
-| `--url URL` | Another upload address, for this run only |
+| `--install` / `--uninstall` | Adds or removes the start with your session (Windows: `--uninstall` also stops and removes the installed copy) |
+| `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself (remembered) |
+| `--url URL` | Another guild's upload address (remembered; `--url default` goes back) |
 
 ### What the app sends, and where
 
@@ -70,7 +80,7 @@ block unsigned programs with no bypass.
 - It reads no other file, sends no telemetry and does not update itself.
 
 The token is the only credential. Give it to the ledger keeper and to nobody else; to stop uploading, run
-`--uninstall` and delete the program, or ask the keeper to revoke the token.
+`--uninstall`, or ask the keeper to revoke the token. The app's log shows only the first six digits of a token.
 
 ## Running a site for your own guild
 
@@ -79,17 +89,18 @@ The token is the only credential. Give it to the ledger keeper and to nobody els
 ```sh
 python3 -I server/ledger_ingest.py --port 8787 --db data/ledger.sqlite   # behind a TLS reverse proxy
 python3 -I server/ledger_admin.py add <token> "<who>"                   # register a member's token
-python3 -I server/ledger_admin.py list | revoke <token or who> | summary
+python3 -I server/ledger_admin.py list | revoke <token or who> | unbind <token or who> | summary
 ```
 
-An unknown token is refused before the request body is read. The companion app does not remember `--url`, so build
-your own with your address as `defaultURL` in `companion/main.go` and hand that binary to your members.
+An unknown token is refused before the request body is read. A token is tied to the record id of its first upload,
+so a member cannot upload under another member's id; `unbind` lifts the tie for a member whose saved file was lost.
+Members point the companion app at your site once: `--url https://<your site>/api/ledger/v1`.
 
 ## Development
 
 ```sh
 python3 -I -m unittest discover -s tests -v    # addon (under lua5.1, against a stub of the WoW API) and server
-cd companion && go test ./...
+cd companion && go test ./...                  # CI runs these on Linux and on Windows
 ```
 
 A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/ledger_common.py` (`check_record`)

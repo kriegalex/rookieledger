@@ -13,6 +13,8 @@ A record is one WoW account's observations, named by an 8-hex id (no character n
 An upload carries the uploader's own record and the ones it received from guild members in game. `data/ledger.sqlite`
 keeps one row per (record id, uploader) and `current_records` picks one per id: the author's own upload when there is
 one, else the highest change counter. Counts are never added across uploads, so sending a file twice changes nothing.
+A token is tied to the record id of its first upload: it cannot upload another id as its own, and no other token can
+upload that id as its own (`unbind_token` lifts the tie, for a member who starts over with a new saved file).
 """
 import hashlib, json, re, sqlite3, time
 from pathlib import Path
@@ -24,7 +26,8 @@ MAX_ID = 9_999_999
 MAX_SKILL = 600
 MAX_COUNT = 1_000_000
 MAX_PEERS = 300
-MAX_ENTRIES = 6000          # per record, as in Record.lua
+MAX_ENTRIES = 50_000        # per record; what is beyond is left out, not refused (see check_record)
+MAX_REV = 10**9             # as Record.MAX_REV in the addon
 MAX_DEPTH = 8
 MAX_VALUES = 1_000_000      # per file: the game spends 9 bytes or more on a value, so the 8 MiB an upload may hold stay
                             # under it, while 8 MiB of "0," would otherwise become 4 million table entries in memory
@@ -34,6 +37,10 @@ ID_RE = re.compile(r"[0-9a-f]{8}")
 
 class LedgerError(ValueError):
     """The upload is not what the addon writes."""
+
+
+class LedgerConflict(LedgerError):
+    """The upload names a record id that this token may not write."""
 
 
 # The saved-variables file -------------------------------------------------------------------------------------------
@@ -168,16 +175,23 @@ def _array(value, length):
 
 
 def check_record(raw):
-    """The record as JSON-ready data, or LedgerError. Mirrors Record.Parse in the addon."""
+    """The record as JSON-ready data, or LedgerError. Mirrors Record.Parse in the addon. A record only grows, so one
+    with more than MAX_ENTRIES entries is not refused (its author could never upload again): colours, then
+    disenchants, then crafts are kept up to that number and "skipped" says how many entries were left out."""
     if not isinstance(raw, dict):
         raise LedgerError("record is not a table")
     colours, crafts, disenchants = raw.get("c") or {}, raw.get("s") or {}, raw.get("d") or {}
     if not all(isinstance(t, dict) for t in (colours, crafts, disenchants)):
         raise LedgerError("record sections are not tables")
-    if len(colours) + len(crafts) + len(disenchants) > MAX_ENTRIES:
-        raise LedgerError("record too large")
-    rec = {"rev": _int(raw.get("rev", 0), 0, 10**9), "t": _int(raw.get("t", 0), 0, 2**32 - 1),
+    skipped = max(0, len(colours) + len(crafts) + len(disenchants) - MAX_ENTRIES)
+    if skipped:
+        keep = iter(range(MAX_ENTRIES))
+        colours, disenchants, crafts = ({key: section[key] for key, _ in zip(section, keep)}
+                                        for section in (colours, disenchants, crafts))
+    rec = {"rev": _int(raw.get("rev", 0), 0, MAX_REV), "t": _int(raw.get("t", 0), 0, 2**32 - 1),
            "b": _int(raw.get("b", 0), 0, 10**9), "c": {}, "s": {}, "d": {}}
+    if skipped:
+        rec["skipped"] = skipped
     for recipe, entry in colours.items():
         entry = _array(entry, 9)
         _int(recipe, 1, MAX_ID), _int(entry[0], 1, MAX_ID)
@@ -296,12 +310,28 @@ def revoke_token(con, token_or_label):
     return cur.rowcount
 
 
+def unbind_token(con, token_or_label):
+    """Lets a token upload a new record id as its own: for a member whose saved file was lost and made again."""
+    key = token_hash(token_or_label) if TOKEN_RE.fullmatch(token_or_label) else None
+    cur = con.execute("UPDATE ledger_tokens SET origin = NULL WHERE token_hash = ? OR label = ?", (key, token_or_label))
+    con.commit()
+    return cur.rowcount
+
+
 def active_hashes(con):
     return {row[0] for row in con.execute("SELECT token_hash FROM ledger_tokens WHERE revoked_at IS NULL")}
 
 
 def store_upload(con, uploader, origin, own, peers):
-    """Keeps each record unless this uploader already sent the same or a newer one. Returns how many rows changed."""
+    """Keeps each record unless this uploader already sent the same or a newer one. Returns how many rows changed.
+    LedgerConflict when the upload's own record id belongs to another token or is not the one this token is tied to:
+    the id is no secret (guild sync shows it), so without the tie any member could overwrite any other's record."""
+    bound = con.execute("SELECT origin FROM ledger_tokens WHERE token_hash = ?", (uploader,)).fetchone()
+    if bound and bound[0] and bound[0] != origin:
+        raise LedgerConflict(f"this token uploads record {bound[0]}, not {origin}")
+    if con.execute("SELECT 1 FROM ledger_tokens WHERE origin = ? AND token_hash != ? AND revoked_at IS NULL",
+                   (origin, uploader)).fetchone():
+        raise LedgerConflict(f"record {origin} belongs to another token")
     stamp, changed = now_iso(), 0
     for rec_id, rec, is_own in [(origin, own, 1)] + [(peer, rec, 0) for peer, rec in peers.items()]:
         if rec["rev"] < 1:

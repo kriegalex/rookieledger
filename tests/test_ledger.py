@@ -218,7 +218,8 @@ class Endpoint(unittest.TestCase):
         self.register()
         self.assertEqual(self.call("status")[0], 204)
         status, body = self.call("upload", body=gzip.compress(SAVED.encode()), headers={"Content-Encoding": "gzip"})
-        self.assertEqual((status, json.loads(body)), (200, {"id": "0876cf1e", "rev": 7, "peers": 1, "stored": 2}))
+        self.assertEqual((status, json.loads(body)),
+                         (200, {"id": "0876cf1e", "rev": 7, "peers": 1, "stored": 2, "skipped": 0}))
         status, body = self.call("upload", body=SAVED.encode())
         self.assertEqual(json.loads(body)["stored"], 0, "the same file again changes nothing")
         con = lc.connect(self.db)
@@ -246,6 +247,34 @@ class Endpoint(unittest.TestCase):
         self.assertEqual(lc.current_records(con)["0876cf1e"]["rev"], 99, "a revoked uploader's rows no longer count")
         con.close()
         self.assertEqual(self.call("status")[0], 401)
+
+    def test_a_token_writes_one_record_id(self):
+        self.register()
+        self.register(OTHER, "B")
+        self.assertEqual(self.call("upload", body=SAVED.encode())[0], 200)
+        # B's file names A's id as its own, with a higher counter: refused, A's record is untouched.
+        stolen = SAVED.replace('["rev"] = 7', '["rev"] = 900').replace("3, -- [2]\n},\n},\n[\"d\"]", "0, -- [2]\n},\n},\n[\"d\"]")
+        self.assertNotEqual(stolen, SAVED)
+        status, body = self.call("upload", token=OTHER, body=stolen.encode())
+        self.assertEqual(status, 409, body)
+        con = lc.connect(self.db)
+        self.assertEqual(lc.current_records(con)["0876cf1e"]["s"], {"7421:125:0": [3, 3]})
+        # A's token cannot move to another id either, until the keeper lifts the tie.
+        moved = SAVED.replace('"0876cf1e"', '"dddddddd"')
+        self.assertEqual(self.call("upload", body=moved.encode())[0], 409)
+        self.assertEqual(lc.unbind_token(con, "A"), 1)
+        con.close()
+        self.assertEqual(self.call("upload", body=moved.encode())[0], 200)
+
+    def test_an_oversized_record_is_cut_not_refused(self):
+        self.register()
+        with mock.patch.object(lc, "MAX_ENTRIES", 2):
+            status, body = self.call("upload", body=SAVED.encode())
+        self.assertEqual((status, json.loads(body)["skipped"]), (200, 1))
+        con = lc.connect(self.db)
+        own = lc.current_records(con)["0876cf1e"]
+        con.close()
+        self.assertEqual((len(own["c"]), len(own["d"]), len(own["s"])), (1, 1, 0), "colours and disenchants come first")
 
     def test_refuses_bad_uploads(self):
         self.register()

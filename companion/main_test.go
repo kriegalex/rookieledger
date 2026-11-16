@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,51 @@ func TestFindsEveryAccount(t *testing.T) {
 	}
 }
 
+func TestFoldersAreNamesNotPatterns(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Games [SSD]", "World of Warcraft")
+	writeSaved(t, root, "ONE", saved(""))
+	if got := expandRoots([]string{root}); len(got) != 1 || got[0] != root {
+		t.Fatalf("expandRoots = %v", got)
+	}
+	if got := findSavedFiles([]string{root}); len(got) != 1 {
+		t.Fatalf("findSavedFiles = %v", got)
+	}
+}
+
+func TestUploadAddressIsRemembered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st := loadState(path)
+	if st.uploadURL() != defaultURL {
+		t.Fatalf("no address given: %q", st.uploadURL())
+	}
+	st.setURL("https://other.example/api/ledger/v1/")
+	saveState(path, st)
+	if got := loadState(path).uploadURL(); got != "https://other.example/api/ledger/v1" {
+		t.Fatalf("after a restart: %q", got)
+	}
+	st.setURL("default")
+	if st.uploadURL() != defaultURL {
+		t.Fatalf("back to the default: %q", st.uploadURL())
+	}
+}
+
+func TestOneCopyPerUser(t *testing.T) {
+	dir := t.TempDir()
+	release, running, err := lockForTest(dir)
+	if running || err != nil {
+		t.Fatalf("first copy: running=%v err=%v", running, err)
+	}
+	if _, running, _ := lockForTest(dir); !running {
+		t.Fatalf("a second copy did not see the first")
+	}
+	release()
+	release, running, err = lockForTest(dir)
+	if running || err != nil {
+		t.Fatalf("after the first copy ended: running=%v err=%v", running, err)
+	}
+	release()
+}
+
 func TestToken(t *testing.T) {
 	if got := readToken([]byte(saved(""))); got != testToken {
 		t.Fatalf("readToken = %q", got)
@@ -156,11 +202,18 @@ func TestRevokedTokenAndRefusedFile(t *testing.T) {
 	clock := time.Now()
 	s := newSyncer(server.URL, &clock)
 
-	web.code = http.StatusBadRequest
-	s.pass([]string{root})
-	s.pass([]string{root})
-	if web.uploads != 1 {
-		t.Fatalf("a refused file was sent %d times", web.uploads)
+	// 400: unreadable; 409: a record id that is not this token's. Neither is sent twice, and --status says why.
+	for i, code := range []int{http.StatusBadRequest, http.StatusConflict} {
+		web.code = code
+		path := writeSaved(t, root, "ONE", saved(strings.Repeat("\n", i)))
+		s.pass([]string{root})
+		s.pass([]string{root})
+		if web.uploads != i+1 {
+			t.Fatalf("a file refused with %d was sent again: %d uploads", code, web.uploads)
+		}
+		if note := s.st.Files[path].Note; !strings.HasPrefix(note, strconv.Itoa(code)) {
+			t.Fatalf("refusal %d not kept for --status: %q", code, note)
+		}
 	}
 
 	web.code = 0

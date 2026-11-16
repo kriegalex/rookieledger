@@ -3,13 +3,13 @@
 // stored in the file, and sends the file with it. The site accepts a token only once its owner has registered it;
 // until then this program asks "is my token known?" at most every 30 minutes and sends nothing else.
 //
-//	rookieledger-sync             watch and upload (on Windows a first run also installs the autostart)
+//	rookieledger-sync             watch and upload (on Windows every start also installs it, see platform_windows.go)
 //	rookieledger-sync --install   start with the session (systemd user unit / Windows Run key), then watch
 //	rookieledger-sync --uninstall remove the autostart
 //	rookieledger-sync --status    print the files found and their tokens, then exit
 //	rookieledger-sync --once      one pass, then exit
 //	  --wow-dir DIR   the "World of Warcraft" folder, when it is not found by itself (remembered)
-//	  --url URL       the upload address (default: the guild site)
+//	  --url URL       the upload address (remembered; "default" goes back to the guild site)
 package main
 
 import (
@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,7 +41,6 @@ const (
 	settleFor       = 5 * time.Second  // a file changed this recently may still be being written
 	maxFileBytes    = 8 << 20
 	maxLogBytes     = 1 << 20
-	instanceGuard   = "127.0.0.1:47613" // held while running: a second copy sees it and stops
 )
 
 // version is the release tag, set by the build (-ldflags "-X main.version=v1.2.3").
@@ -51,13 +49,32 @@ var version = "dev"
 var tokenRE = regexp.MustCompile(`\["token"\] = "([0-9a-f]{32})"`)
 
 type fileState struct {
-	SHA string `json:"sha"` // the content last accepted, or last refused as malformed
+	SHA  string `json:"sha"`            // the content last accepted, or last refused
+	Note string `json:"note,omitempty"` // why the site refused it, shown by --status
 }
 
 type state struct {
 	WowDirs   []string             `json:"wow_dirs,omitempty"`
+	URL       string               `json:"url,omitempty"` // the upload address when it is not the built-in one
 	Files     map[string]fileState `json:"files,omitempty"`
 	Installed bool                 `json:"installed,omitempty"`
+}
+
+// uploadURL is where this installation uploads: the address given once with --url, else the guild site.
+func (st *state) uploadURL() string {
+	if st.URL != "" {
+		return st.URL
+	}
+	return defaultURL
+}
+
+// setURL remembers the address given with --url; "default" goes back to the built-in one.
+func (st *state) setURL(given string) {
+	given = strings.TrimRight(strings.TrimSpace(given), "/")
+	if given == "default" {
+		given = ""
+	}
+	st.URL = given
 }
 
 type tokenStatus struct {
@@ -102,12 +119,15 @@ func saveState(path string, st *state) {
 }
 
 // findSavedFiles lists the addon's saved file of every WoW account under the given "World of Warcraft" folders.
+// The folders are read as they are named, never as patterns: "Games [SSD]" is a folder, not a character class.
 func findSavedFiles(roots []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, root := range roots {
-		matches, _ := filepath.Glob(filepath.Join(root, flavor, "WTF", "Account", "*", "SavedVariables", savedFile))
-		for _, m := range matches {
+		accounts := filepath.Join(root, flavor, "WTF", "Account")
+		entries, _ := os.ReadDir(accounts)
+		for _, entry := range entries {
+			m := filepath.Join(accounts, entry.Name(), "SavedVariables", savedFile)
 			if real, err := filepath.EvalSymlinks(m); err == nil && !seen[real] {
 				seen[real] = true
 				out = append(out, m)
@@ -118,13 +138,23 @@ func findSavedFiles(roots []string) []string {
 	return out
 }
 
-// expandRoots turns candidate patterns into existing folders that hold a WoW Forever install.
-func expandRoots(patterns []string) []string {
+func holdsForever(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, flavor))
+	return err == nil && info.IsDir()
+}
+
+// expandRoots turns candidates into existing folders that hold a WoW Forever install. A candidate is first taken
+// as the folder it names (the one given with --wow-dir, the one in the registry), then as a pattern.
+func expandRoots(candidates []string) []string {
 	var out []string
-	for _, p := range patterns {
-		matches, _ := filepath.Glob(p)
+	for _, c := range candidates {
+		if holdsForever(c) {
+			out = append(out, c)
+			continue
+		}
+		matches, _ := filepath.Glob(c)
 		for _, m := range matches {
-			if info, err := os.Stat(filepath.Join(m, flavor)); err == nil && info.IsDir() {
+			if holdsForever(m) {
 				out = append(out, m)
 			}
 		}
@@ -192,7 +222,8 @@ func (s *syncer) registered(token string) bool {
 		ts.registered = true
 		log.Printf("token %s… is registered", token[:6])
 	case code == http.StatusUnauthorized:
-		log.Printf("token not registered yet: give %s to the guild's ledger keeper (in game: /ledger token)", token)
+		// Never the whole token: this log is what a member pastes when asking why nothing uploads.
+		log.Printf("token %s… not registered yet: /ledger token in game shows it, to give to the guild's ledger keeper", token[:6])
 	default:
 		log.Printf("unexpected answer %d to the status check", code)
 	}
@@ -229,10 +260,11 @@ func (s *syncer) syncFile(path string) {
 	case code == http.StatusUnauthorized:
 		s.tokens[token] = &tokenStatus{checked: s.now()}
 		log.Printf("token no longer accepted; asking again in %s", recheckEvery)
-	case code == http.StatusBadRequest:
-		// The site cannot read this content: sending it again would not help. A new save of the game is tried again.
-		log.Printf("the site refused the file (%s); waiting for the game to write a new one", text)
-		s.st.Files[path] = fileState{SHA: sha}
+	case code >= 400 && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests:
+		// The site will not take this content (unreadable, too large, a record id that is not this token's): sending
+		// it again would not help. A new save of the game is tried again, and --status says why this one was refused.
+		log.Printf("the site refused the file (%d %s); waiting for the game to write a new one", code, text)
+		s.st.Files[path] = fileState{SHA: sha, Note: fmt.Sprintf("%d %s", code, text)}
 		s.save()
 	default:
 		log.Printf("upload answered %d, will retry", code)
@@ -283,6 +315,9 @@ func describe(st *state) string {
 			token = "?"
 		}
 		fmt.Fprintf(&b, text("found"), filepath.Base(filepath.Dir(filepath.Dir(f))), token)
+		if note := st.Files[f].Note; note != "" {
+			fmt.Fprintf(&b, text("refused"), note)
+		}
 	}
 	b.WriteString(text("give"))
 	return b.String()
@@ -290,7 +325,7 @@ func describe(st *state) string {
 
 func main() {
 	wowDir := flag.String("wow-dir", "", `the "World of Warcraft" folder`)
-	url := flag.String("url", defaultURL, "upload address")
+	url := flag.String("url", "", `upload address, remembered ("default": the guild site)`)
 	once := flag.Bool("once", false, "one pass, then exit")
 	install := flag.Bool("install", false, "start with the session, then watch")
 	uninstall := flag.Bool("uninstall", false, "remove the autostart")
@@ -304,6 +339,10 @@ func main() {
 	if *wowDir != "" {
 		abs, _ := filepath.Abs(*wowDir)
 		st.WowDirs = []string{abs}
+		saveState(statePath, st)
+	}
+	if *url != "" {
+		st.setURL(*url)
 		saveState(statePath, st)
 	}
 	if *status {
@@ -334,25 +373,15 @@ func main() {
 	setupLog(filepath.Join(dir, "sync.log"))
 
 	if !*once {
-		guard, err := net.Listen("tcp", instanceGuard)
-		if err != nil {
-			notify(text("running") + "\n\n" + describe(st))
+		// One copy per user: settle makes this process that copy, or says that another one is.
+		release, proceed := settle(dir, st, func() { saveState(statePath, st) })
+		if !proceed {
 			return
 		}
-		defer guard.Close()
-	}
-	if *install || (installOnFirstRun && !st.Installed) {
-		if err := installAutostart(); err != nil {
-			log.Printf("autostart not installed: %v", err)
-			notify(text("noautostart") + err.Error())
-		} else {
-			st.Installed = true
-			saveState(statePath, st)
-			notify(text("installed") + "\n\n" + describe(st))
-		}
+		defer release()
 	}
 
-	s := &syncer{url: strings.TrimRight(*url, "/"), client: &http.Client{Timeout: 30 * time.Second}, st: st,
+	s := &syncer{url: st.uploadURL(), client: &http.Client{Timeout: 30 * time.Second}, st: st,
 		save: func() { saveState(statePath, st) }, tokens: map[string]*tokenStatus{}, now: time.Now}
 	log.Printf("rookieledger-sync %s, uploading to %s", version, s.url)
 	finder := &rootFinder{find: func() []string { return roots(st) }, now: time.Now}

@@ -92,10 +92,13 @@ end
 
 local function InitDB()
     local db = RookieLedgerDB
-    if type(db) ~= "table" or db.v ~= ns.FORMAT then
-        db = { v = ns.FORMAT }
+    if type(db) ~= "table" then
+        db = {}
         RookieLedgerDB = db
     end
+    -- A saved table of another format keeps its token, id and records: the token is registered on the site and the
+    -- observations cannot be made again. A format change converts the fields here instead of starting over.
+    db.v = ns.FORMAT
     local fresh = false
     if type(db.token) ~= "string" or not db.token:match("^%x+$") or #db.token ~= 32 then
         db.token = RandomHex(8, "token")
@@ -109,6 +112,20 @@ local function InitDB()
     end
     if type(db.own) ~= "table" then
         db.own = ns.Record.New()
+    end
+    local own = db.own
+    for _, section in ipairs({ "c", "s", "d" }) do
+        if type(own[section]) ~= "table" then
+            own[section] = {}
+        end
+    end
+    for _, counter in ipairs({ "rev", "t", "b" }) do
+        if type(own[counter]) ~= "number" then
+            own[counter] = 0
+        end
+    end
+    if type(own.lr) ~= "table" or type(own.lr0) ~= "number" then
+        own.lr, own.lr0 = {}, own.rev   -- see Record.lua: which lines changed when is known from here on
     end
     if type(db.peers) ~= "table" then
         db.peers = {}

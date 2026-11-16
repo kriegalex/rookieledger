@@ -3,7 +3,7 @@
 -- Recipe colours: while one of our own profession windows is open, the colour of every learned recipe at the
 --   current skill (C_TradeSkillUI.GetRecipeInfo().relativeDifficulty: 0 orange, 1 yellow, 2 green, 3 grey).
 -- Skill-ups: for each craft of a recipe we have seen in a window, the skill and colour before it and the points gained.
--- Disenchants: the item that left the bags during a Disenchant cast, and what the loot window held.
+-- Disenchants: the item that left the bags during a Disenchant cast, and what the loot window it opened held.
 --
 -- Nothing is recorded for a profession while its skill carries a bonus (racial, enchant, lure): colours and
 -- skill-ups follow the boosted skill, and mixing the two would blur the thresholds.
@@ -26,6 +26,7 @@ local SCAN_DELAY = 1        -- after the window's last change
 local SETTLE = 1.5          -- after a skill point: the window's colours follow the new skill a moment later
 local UPS_DELAY = 1.2       -- after a craft, before reading the points it gave
 local DISENCHANT_TIMEOUT = 10
+local EARLY_LOOT = 0.5      -- a loot window this shortly before the cast's end is taken for its result
 
 local timers = {}
 
@@ -236,7 +237,7 @@ local function Bags()
     return found
 end
 
-local destroy   -- the disenchant under way: { bags, t, cast, done, loot }
+local destroy   -- the disenchant under way: { bags, t, cast, done, loot, early, earlyAt }
 
 -- The disenchant under way, or nil. One that started longer ago than DISENCHANT_TIMEOUT is forgotten first: when its
 -- result never showed in a loot window, the next loot window (a corpse, a chest) is not its result either.
@@ -259,6 +260,39 @@ local function ReadLoot()
         end
     end
     return any and loot or nil
+end
+
+-- Whether the open loot window comes from an item (a disenchant), as far as the client tells: true, false for a
+-- corpse or a chest, nil when it names no source.
+local function LootFromItem()
+    if type(GetLootSourceInfo) ~= "function" then
+        return nil
+    end
+    local verdict
+    for slot = 1, ns.Try(GetNumLootItems) or 0 do
+        local source = ns.Plain((ns.Try(GetLootSourceInfo, slot)))
+        if type(source) == "string" then
+            if source:sub(1, 5) ~= "Item-" then
+                return false
+            end
+            verdict = true
+        end
+    end
+    return verdict
+end
+
+-- A loot window opened while a disenchant is under way. It is the disenchant's result when the client says it comes
+-- from an item, or names no source and the cast has ended; a corpse looted during the cast is not.
+local function LootOpened(pending)
+    local fromItem = LootFromItem()
+    if fromItem == false then
+        return
+    end
+    if fromItem or pending.done then
+        pending.loot = ReadLoot()
+    else
+        pending.early, pending.earlyAt = ReadLoot(), GetTime()   -- counts if the cast ends within EARLY_LOOT
+    end
 end
 
 local function ResolveDisenchant()
@@ -306,6 +340,9 @@ local function OnSpellcast(event, unit, cast, spell)
         elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
             if destroy then
                 destroy.done = true
+                if not destroy.loot and destroy.early and GetTime() - destroy.earlyAt <= EARLY_LOOT then
+                    destroy.loot = destroy.early
+                end
                 ResolveDisenchant()
             end
         elseif destroy and not OtherCast(destroy.cast, cast) then
@@ -345,7 +382,7 @@ function Scan.Init()
         elseif event == "LOOT_READY" then
             local pending = PendingDisenchant()
             if pending and not pending.loot then
-                pending.loot = ReadLoot()
+                LootOpened(pending)
                 ResolveDisenchant()
             end
         elseif event == "BAG_UPDATE_DELAYED" then

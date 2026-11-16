@@ -3,15 +3,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // On Linux the autostart is a systemd user unit, installed only when asked (--install).
-const installOnFirstRun = false
 
 // systemd starts the unit at once, so the process that installed it has nothing left to do.
 const installHandsOver = true
@@ -80,6 +82,33 @@ func removeAutostart() error {
 }
 
 func notify(message string) { fmt.Println(message) }
+
+// lockInstance takes this user's lock (a file in the config folder, so two users of one machine do not meet).
+// running is true when another copy of this user holds it; any other failure is reported and does not stop the program.
+func lockInstance(dir string) (release func(), running bool, err error) {
+	f, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return func() {}, false, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return func() {}, errors.Is(err, syscall.EWOULDBLOCK), err
+	}
+	return func() { f.Close() }, false, nil
+}
+
+// settle makes this process the one copy that runs for this user.
+func settle(dir string, st *state, save func()) (release func(), proceed bool) {
+	release, running, err := lockInstance(dir)
+	if running {
+		notify(text("running") + "\n\n" + describe(st))
+		return nil, false
+	}
+	if err != nil {
+		log.Printf("no instance lock: %v", err)
+	}
+	return release, true
+}
 
 func french() bool {
 	for _, name := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {

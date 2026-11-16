@@ -10,7 +10,8 @@ Every request carries `Authorization: Bearer <token>`, the 32 hex digits the add
 is looked up (its SHA-256, in memory) before anything else: an unknown one gets 401 and the connection is closed
 without the body being read, so an unregistered or revoked app costs one header parse. Tokens are registered by hand
 with server/ledger_admin.py. A registered token may upload once every MIN_INTERVAL seconds, at most MAX_BODY bytes;
-the file is parsed as data and checked field by field (server/ledger_common.py), never executed.
+the file is parsed as data and checked field by field (server/ledger_common.py), never executed. A token writes one
+record id as its own, the one of its first upload: another id is answered 409.
 """
 import argparse, json, sys, threading, time, zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -127,9 +128,12 @@ class Handler(BaseHTTPRequestHandler):
         con = lc.connect(self.server.db_path)
         try:
             changed = lc.store_upload(con, digest, origin, own, peers)
+        except lc.LedgerConflict as error:
+            return self.reply(409, {"error": str(error)})
         finally:
             con.close()
-        self.reply(200, {"id": origin, "rev": own["rev"], "peers": len(peers), "stored": changed})
+        self.reply(200, {"id": origin, "rev": own["rev"], "peers": len(peers), "stored": changed,
+                         "skipped": own.get("skipped", 0)})
 
     def log_message(self, format, *args):
         # One line per request, without the Authorization header and without the client's address.

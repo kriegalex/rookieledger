@@ -3,23 +3,38 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
-// A double-click is the whole installation on Windows.
-const installOnFirstRun = true
+// A double-click is the whole installation on Windows, and every start repairs it: wherever the program is started
+// from (the Downloads folder, a folder a zip was opened in), it copies itself to installedExe, points the Run key
+// there and starts that copy. The file a member downloaded can then be moved or deleted, and a newer download
+// replaces the installed copy the same way.
 
 // The Run key only starts the program at the next logon, so the installing process keeps running.
 const installHandsOver = false
 
-const runKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+const (
+	runKey    = `Software\Microsoft\Windows\CurrentVersion\Run` // under HKEY_CURRENT_USER
+	runValue  = "RookieLedgerSync"
+	exeName   = "RookieLedgerSync.exe"
+	mutexName = `Local\RookieLedgerSync` // Local: one per logon session, so two users of one PC do not meet
+)
+
+var (
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	advapi32 = syscall.NewLazyDLL("advapi32.dll")
+)
 
 func hidden(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
@@ -27,19 +42,45 @@ func hidden(name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// regString reads a text value through the registry API. reg.exe prints in the console code page, which turns
+// "D:\Jeux vidéo" into bytes no file name matches.
+func regString(root syscall.Handle, path, name string) (string, bool) {
+	p, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return "", false
+	}
+	n, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return "", false
+	}
+	var key syscall.Handle
+	if syscall.RegOpenKeyEx(root, p, 0, syscall.KEY_READ, &key) != nil {
+		return "", false
+	}
+	defer syscall.RegCloseKey(key)
+	var kind, size uint32
+	if syscall.RegQueryValueEx(key, n, nil, &kind, nil, &size) != nil || size == 0 ||
+		(kind != syscall.REG_SZ && kind != syscall.REG_EXPAND_SZ) {
+		return "", false
+	}
+	buf := make([]uint16, size/2+1) // size is in bytes; the text may come without its closing zero
+	if syscall.RegQueryValueEx(key, n, nil, &kind, (*byte)(unsafe.Pointer(&buf[0])), &size) != nil {
+		return "", false
+	}
+	return syscall.UTF16ToString(buf), true
+}
+
 // platformRoots lists where a "World of Warcraft" folder usually is: the path Battle.net recorded, then common folders
 // on every drive.
 func platformRoots() []string {
 	var out []string
-	for _, key := range []string{`HKLM\SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft`,
-		`HKLM\SOFTWARE\Blizzard Entertainment\World of Warcraft`} {
-		if data, err := hidden("reg", "query", key, "/v", "InstallPath").Output(); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				if i := strings.Index(line, "REG_SZ"); i >= 0 {
-					// InstallPath names one flavor's folder (…\World of Warcraft\_retail_\).
-					path := strings.TrimRight(strings.TrimSpace(line[i+len("REG_SZ"):]), `\`)
-					out = append(out, path, filepath.Dir(path))
-				}
+	for _, key := range []string{`SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft`,
+		`SOFTWARE\Blizzard Entertainment\World of Warcraft`} {
+		if path, ok := regString(syscall.HKEY_LOCAL_MACHINE, key, "InstallPath"); ok {
+			// InstallPath names one flavor's folder (…\World of Warcraft\_retail_\).
+			path = strings.TrimRight(strings.TrimSpace(path), `\`)
+			if path != "" {
+				out = append(out, path, filepath.Dir(path))
 			}
 		}
 	}
@@ -53,16 +94,197 @@ func platformRoots() []string {
 	return out
 }
 
-func installAutostart() error {
-	exe, err := os.Executable()
+// installedExe is where the copy that starts with the session lives: %LocalAppData%\RookieLedgerSync.
+func installedExe() (string, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "RookieLedgerSync", exeName), nil
+}
+
+func samePath(a, b string) bool {
+	if ia, err := os.Stat(a); err == nil {
+		if ib, err := os.Stat(b); err == nil {
+			return os.SameFile(ia, ib)
+		}
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+func copyFile(from, to string) error {
+	in, err := os.Open(from)
 	if err != nil {
 		return err
 	}
-	return hidden("reg", "add", runKey, "/v", "RookieLedgerSync", "/t", "REG_SZ", "/d", `"`+exe+`"`, "/f").Run()
+	defer in.Close()
+	tmp := to + ".new"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp, to)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
+func pidFile(dir string) string { return filepath.Join(dir, "pid") }
+
+// stopRunning ends the copy that noted its process id in the config folder, if it still runs under our name.
+func stopRunning(dir string) {
+	data, err := os.ReadFile(pidFile(dir))
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		return
+	}
+	_ = hidden("taskkill", "/F", "/PID", strconv.Itoa(pid), "/FI", "IMAGENAME eq "+exeName).Run()
+	_ = os.Remove(pidFile(dir))
+}
+
+// installCopy puts this program at target, replacing a copy that may be running.
+func installCopy(dir, self, target string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	stopRunning(dir)
+	var err error
+	for try := 0; try < 10; try++ { // a stopped copy lets go of its file a moment later
+		if err = copyFile(self, target); err == nil {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	// Still held: a running program's file cannot be overwritten, but it can be renamed out of the way.
+	old := target + ".old"
+	_ = os.Remove(old)
+	if os.Rename(target, old) == nil {
+		err = copyFile(self, target)
+	}
+	return err
+}
+
+// runKeyValue opens the Run key of this user for writing and hands it, with the value's name, to f.
+func runKeyValue(f func(key syscall.Handle, name *uint16) uintptr) error {
+	path, _ := syscall.UTF16PtrFromString(runKey)
+	name, _ := syscall.UTF16PtrFromString(runValue)
+	var key syscall.Handle
+	// Created when missing: the key is there on every Windows, not in every sandbox.
+	if code, _, _ := advapi32.NewProc("RegCreateKeyExW").Call(uintptr(syscall.HKEY_CURRENT_USER), uintptr(unsafe.Pointer(path)),
+		0, 0, 0, syscall.KEY_SET_VALUE, 0, uintptr(unsafe.Pointer(&key)), 0); code != 0 {
+		return syscall.Errno(code)
+	}
+	defer syscall.RegCloseKey(key)
+	if code := f(key, name); code != 0 {
+		return syscall.Errno(code)
+	}
+	return nil
+}
+
+func registerRun(exe string) error {
+	data, err := syscall.UTF16FromString(`"` + exe + `"`)
+	if err != nil {
+		return err
+	}
+	return runKeyValue(func(key syscall.Handle, name *uint16) uintptr {
+		code, _, _ := advapi32.NewProc("RegSetValueExW").Call(uintptr(key), uintptr(unsafe.Pointer(name)), 0,
+			syscall.REG_SZ, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)*2))
+		return code
+	})
+}
+
+func installAutostart() error {
+	exe, err := installedExe()
+	if err != nil {
+		return err
+	}
+	return registerRun(exe)
+}
+
+// removeAutostart undoes the installation: the Run key, the running copy and the installed file.
 func removeAutostart() error {
-	return hidden("reg", "delete", runKey, "/v", "RookieLedgerSync", "/f").Run()
+	err := runKeyValue(func(key syscall.Handle, name *uint16) uintptr {
+		code, _, _ := advapi32.NewProc("RegDeleteValueW").Call(uintptr(key), uintptr(unsafe.Pointer(name)))
+		return code
+	})
+	if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
+		err = nil // it was not installed
+	}
+	if dir, dirErr := os.UserConfigDir(); dirErr == nil {
+		stopRunning(filepath.Join(dir, "RookieLedgerSync"))
+	}
+	if target, targetErr := installedExe(); targetErr == nil {
+		if self, selfErr := os.Executable(); selfErr != nil || !samePath(self, target) {
+			_ = os.Remove(target)
+		}
+	}
+	return err
+}
+
+// lockInstance takes this logon session's named mutex. running is true when another copy holds it.
+func lockInstance() (release func(), running bool, err error) {
+	name, err := syscall.UTF16PtrFromString(mutexName)
+	if err != nil {
+		return func() {}, false, err
+	}
+	handle, _, callErr := kernel32.NewProc("CreateMutexW").Call(0, 0, uintptr(unsafe.Pointer(name)))
+	if handle == 0 {
+		return func() {}, false, callErr
+	}
+	release = func() { _ = syscall.CloseHandle(syscall.Handle(handle)) }
+	if errors.Is(callErr, syscall.ERROR_ALREADY_EXISTS) {
+		release()
+		return func() {}, true, nil
+	}
+	return release, false, nil
+}
+
+// settle makes this process the one copy that runs for this user, started from the installed place. It returns
+// false when another process is that copy: the installed one it just started, or one that already runs.
+func settle(dir string, st *state, save func()) (release func(), proceed bool) {
+	self, selfErr := os.Executable()
+	target, targetErr := installedExe()
+	runFrom := self
+	if selfErr == nil && targetErr == nil && !samePath(self, target) {
+		err := installCopy(dir, self, target)
+		if err == nil {
+			err = hidden(target, os.Args[1:]...).Start()
+		}
+		if err == nil {
+			if regErr := registerRun(target); regErr != nil {
+				notify(text("noautostart") + regErr.Error())
+			} else {
+				notify(text("installed") + "\n\n" + describe(st))
+			}
+			return nil, false
+		}
+		log.Printf("not installed to %s (%v): running from %s", target, err, self)
+	}
+	if selfErr == nil {
+		if err := registerRun(runFrom); err != nil {
+			log.Printf("autostart not installed: %v", err)
+		}
+	}
+	release, running, err := lockInstance()
+	if running {
+		notify(text("running") + "\n\n" + describe(st))
+		return nil, false
+	}
+	if err != nil {
+		log.Printf("no instance lock: %v", err)
+	}
+	_ = os.WriteFile(pidFile(dir), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	return release, true
 }
 
 // notify shows a message box: the program is built without a console window.
@@ -73,7 +295,7 @@ func notify(message string) {
 }
 
 func french() bool {
-	lang, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetUserDefaultUILanguage").Call()
+	lang, _, _ := kernel32.NewProc("GetUserDefaultUILanguage").Call()
 	return lang&0x3ff == 0x0c
 }
 

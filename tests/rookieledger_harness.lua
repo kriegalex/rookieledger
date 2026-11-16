@@ -1,5 +1,6 @@
 -- Runs the RookieLedger addon outside the game: a stub of the WoW API with a simulated clock, one environment per
--- client and a guild channel that delivers every addon message to every client (the sender included, as in game).
+-- client and a guild channel that delivers every addon message to every client of the guild (the sender included, as
+-- in game), refuses them during a messaging lockdown and throttles as the server does (10 at once, 1 more a second).
 --   lua5.1 tests/rookieledger_harness.lua addon/RookieLedger [saved-variables-out.lua]
 -- Prints "ok <name>" per check and exits non-zero on the first failure. With a second argument it writes client A's
 -- RookieLedgerDB in the layout the game gives a saved-variables file, for the server's parser tests.
@@ -44,7 +45,8 @@ local function colourAt(thresholds, skill)
 end
 
 local function newClient(name)
-    local c = { name = name, online = true, frames = {}, printed = {}, sent = 0,
+    local c = { name = name, online = true, frames = {}, printed = {}, sent = 0, throttled = 0, guild = "Guild",
+        allowance = 10, allowanceAt = clock,
         profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {} }
     local env = setmetatable({}, { __index = _G })
     c.env = env
@@ -54,7 +56,8 @@ local function newClient(name)
     env.GetLocale = function() return "frFR" end
     env.GetBuildInfo = function() return "1.60.1", "70374" end
     env.UnitGUID = function() return "Player-6941-" .. name end
-    env.IsInGuild = function() return true end
+    env.IsInGuild = function() return c.guild ~= nil end
+    env.GetGuildInfo = function() return c.guild end
     env.SlashCmdList, env.StaticPopupDialogs = {}, {}
     env.StaticPopup_Show = function(which) c.popup = which end
     env.CreateFrame = function()
@@ -71,7 +74,18 @@ local function newClient(name)
     env.C_Timer = { After = function(delay, f) timers[#timers + 1] = { at = clock + delay, f = f, client = c } end }
     env.C_ChatInfo = {
         RegisterAddonMessagePrefix = function() return true end,
+        InChatMessagingLockdown = function() return c.lockdown == true and not c.lockdownUnannounced end,
         SendAddonMessage = function(prefix, text, channel)
+            if c.lockdown then
+                return 11
+            end
+            c.allowance = math.min(10, c.allowance + (clock - c.allowanceAt))
+            c.allowanceAt = clock
+            if c.allowance < 1 then
+                c.throttled = c.throttled + 1
+                return 3
+            end
+            c.allowance = c.allowance - 1
             assert(#text <= 255, "addon message longer than 255 bytes")
             assert(not text:find("%z"), "NUL in an addon message")
             for _, other in ipairs(clients) do
@@ -79,7 +93,7 @@ local function newClient(name)
             end
             c.sent = c.sent + 1
             for _, other in ipairs(clients) do
-                if other.online then
+                if other.online and other.guild == c.guild then
                     other.fire("CHAT_MSG_ADDON", prefix, text, channel, c.name)
                 end
             end
@@ -132,6 +146,7 @@ local function newClient(name)
     env.GetNumLootItems = function() return #c.loot end
     env.GetLootSlotLink = function(slot) return "|Hitem:" .. c.loot[slot][1] .. "::|h[m]|h" end
     env.GetLootSlotInfo = function(slot) return 1, "m", c.loot[slot][2] end
+    env.GetLootSourceInfo = function() return c.lootSource end   -- nil: this client names no source
 
     function c.fire(event, ...)
         for _, frame in ipairs(c.frames) do
@@ -276,6 +291,41 @@ A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 585)
 run(3)
 check("an interrupted craft is still dropped", own.s["7418:127:2"] == nil)
 
+-- A corpse looted while the disenchant is still being cast is not its result, whether the client names the loot's
+-- source or not.
+for _, named in ipairs({ true, false }) do
+    local item = named and 7001 or 7002
+    A.items[item] = { q = 2, l = 22, k = 4 }
+    A.bags = { [1] = item }
+    A.fire("UNIT_SPELLCAST_START", "player", "cast-6", 13262)
+    run(1)
+    A.loot, A.lootSource = { { 2589, 2 } }, named and "Creature-0-4444-0-1-299-0000000001" or nil
+    A.fire("LOOT_READY")
+    run(2)
+    A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-6", 13262)
+    A.loot, A.lootSource = { { 10940, 2 } }, named and "Item-4444-0-4000000000000001" or nil
+    A.fire("LOOT_READY")
+    A.bags = {}
+    A.fire("BAG_UPDATE_DELAYED")
+    local entry = own.d[item]
+    check("a corpse looted during the cast is not the result (source " .. (named and "named" or "not named") .. ")",
+        entry and entry.n == 1 and entry.m[10940] and entry.m[10940][1] == 2 and entry.m[2589] == nil)
+    A.loot, A.lootSource = {}, nil
+end
+-- A result window that opens a moment before the cast is reported as done still counts.
+A.items[7003] = { q = 2, l = 22, k = 4 }
+A.bags = { [1] = 7003 }
+A.fire("UNIT_SPELLCAST_START", "player", "cast-7", 13262)
+run(3)
+A.loot = { { 10940, 1 } }
+A.fire("LOOT_READY")
+run(0.2)
+A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-7", 13262)
+A.bags = {}
+A.fire("BAG_UPDATE_DELAYED")
+check("a result window just before the cast's end counts", own.d[7003] and own.d[7003].m[10940][1] == 1)
+A.loot = {}
+
 -- A skill bonus stops the recording for that profession.
 A.window = 197
 A.profs[2].bonus = 15
@@ -305,6 +355,20 @@ for name, bad in pairs({
 }) do
     check("rejects " .. name, Record.Parse(bad) == nil)
 end
+
+-- A part of a record adds to the copy a member holds: the wider range, the larger count.
+local whole = Record.Parse("h,1,1;c,7421,333,125,126,0,0,0,0,0,0;d,2584,16,2,4,1;m,2584,10940,2,1;s,7418,125,1,2,1")
+Record.Merge(whole, Record.Parse("h,2,2;c,7421,333,120,125,130,131,0,0,0,0;d,2584,16,2,4,3;m,2584,10939,1,1;s,7418,125,1,5,2"))
+check("a part merges into a held record", Record.Serialize(whole)
+    == "h,2,2;c,7421,333,120,126,130,131,0,0,0,0;d,2584,16,2,4,3;m,2584,10939,1,1;m,2584,10940,2,1;s,7418,125,1,5,2",
+    Record.Serialize(whole))
+-- A record larger than guild sync carries is cut, not withheld.
+local big = Record.New()
+for recipe = 1, 4000 do
+    Record.Observe(big, recipe, 333, 0, 100)
+end
+local cut = Record.Serialize(big)
+check("an oversized record is sent cut to size", #cut <= Record.MAX_TEXT and #cut > Record.MAX_TEXT - 100 and Record.Parse(cut) ~= nil, #cut)
 
 -- Guild sync -----------------------------------------------------------------
 
@@ -337,6 +401,60 @@ run(2400)
 check("a change reaches both peers", B.db.peers[A.db.id].rev == own.rev and C.db.peers[A.db.id].rev == own.rev
     and B.db.peers[A.db.id].c[7421][3] == 127)
 
+-- One more craft: only the changed line travels, not the whole record again.
+local sentA = A.sent
+A.fire("UNIT_SPELLCAST_START", "player", "cast-8", 7418)
+run(3)
+A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-8", 7418)
+run(900)
+check("a change is sent as one small message", A.sent - sentA <= 2, A.sent - sentA)
+check("the part brings both peers up to date", Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own)
+    and Record.Serialize(C.db.peers[A.db.id]) == Record.Serialize(own) and C.db.peers[A.db.id].rev == own.rev)
+
+-- A messaging lockdown (an encounter) holds the queue back instead of dropping it: what the members had to say
+-- during it goes out when it ends, not at their next hello half an hour later.
+local D = newClient("D")
+D.load(nil)
+for _, c in ipairs(clients) do
+    c.lockdown, c.lockdownUnannounced = true, c == A   -- A only learns of it from the refusal
+end
+run(1900)
+check("nothing passes during a lockdown", D.db.peers[A.db.id] == nil)
+for _, c in ipairs(clients) do
+    c.lockdown = false
+end
+run(200)
+check("a lockdown delays a transfer, it does not lose it", D.db.peers[A.db.id]
+    and Record.Serialize(D.db.peers[A.db.id]) == Record.Serialize(own))
+D.online = false
+
+-- A made-up record under A's id: the peers take it, A hears it, moves past its counter and sends the real one.
+local realRev = own.rev
+B.fire("CHAT_MSG_ADDON", "RookieLedger", "P," .. A.db.id .. ",999,0,1,1,h,1,1", "GUILD", "X")
+check("a made-up record is taken at first", B.db.peers[A.db.id].rev == 999 and next(B.db.peers[A.db.id].c) == nil)
+A.fire("CHAT_MSG_ADDON", "RookieLedger", "P," .. A.db.id .. ",999,0,1,1,h,1,1", "GUILD", "X")
+check("the author moves past the made-up counter", own.rev == 1000 and realRev < 999)
+run(1200)
+check("the author's record replaces the made-up one", B.db.peers[A.db.id].rev == own.rev
+    and Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own))
+for _, message in ipairs({ "P," .. A.db.id .. ",100000000000000000000,0,1,1,h,1,1", "P," .. A.db.id .. ",2000000000,0,1,1,h,1,1",
+    "H,deadbeef,1," .. A.db.id .. ",1e20", "H,deadbeef,1," .. A.db.id .. ",3000000000" }) do
+    A.fire("CHAT_MSG_ADDON", "RookieLedger", message, "GUILD", "X")
+    B.fire("CHAT_MSG_ADDON", "RookieLedger", message, "GUILD", "X")
+end
+run(60)
+check("a counter no record can reach is ignored", own.rev == 1000 and B.db.peers[A.db.id].rev == 1000)
+
+-- A character of the same account in another guild does not carry this guild's records there.
+C.guild = "Other"
+local E = newClient("E")
+E.guild = "Other"
+E.load(nil)
+run(2400)
+check("records stay in the guild they came from", E.db.peers[A.db.id] == nil and next(E.db.peers) == nil)
+C.guild = "Guild"
+E.online = false
+
 -- Sync switched off: nothing leaves.
 B.ns.Command("sync off")
 local sentB = B.sent
@@ -347,14 +465,18 @@ check("sync off sends nothing", B.sent == sentB)
 local token, id = A.db.token, A.db.id
 A.load(A.db)
 check("a reload keeps the token and the record", A.db.token == token and A.db.id == id and A.db.own.c[7421][3] == 127)
+A.db.v = 99
+A.load(A.db)
+check("another saved format keeps the token and the record", A.db.token == token and A.db.id == id
+    and A.db.own.c[7421][3] == 127 and A.db.v == 1)
 A.ns.Command("token")
 check("/ledger token shows the popup", A.popup == "ROOKIELEDGER_TOKEN")
 
 -- Two versions of one record passing at the same time (two holders asked at once): the newer one still arrives whole.
 local newer, older = "h,1,1;c,7421,333,125,126,0,0,0,0,0,0", "h,1,1;c,7421,333,125,125,0,0,0,0,0,0"
 for _, message in ipairs({
-    "D,deadbeef,5,1,2," .. older:sub(1, 20), "D,deadbeef,7,1,2," .. newer:sub(1, 20),
-    "D,deadbeef,5,2,2," .. older:sub(21), "D,deadbeef,7,2,2," .. newer:sub(21),
+    "P,deadbeef,5,0,1,2," .. older:sub(1, 20), "P,deadbeef,7,0,1,2," .. newer:sub(1, 20),
+    "P,deadbeef,5,0,2,2," .. older:sub(21), "P,deadbeef,7,0,2,2," .. newer:sub(21),
 }) do
     C.fire("CHAT_MSG_ADDON", "RookieLedger", message, "GUILD", "X")
 end
@@ -402,6 +524,7 @@ if OUT then
     print("wrote " .. OUT)
 end
 for _, c in ipairs(clients) do
+    check(c.name .. " never ran into the server's message limit", c.throttled == 0, c.throttled)
     for _, line in ipairs(c.printed) do
         assert(not line:find(c.db.token, 1, true) or line:find("jeton"), "token printed outside /ledger token")
     end

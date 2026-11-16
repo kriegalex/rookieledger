@@ -3,6 +3,7 @@
 
   python3 -I server/ledger_admin.py add <token> "<who>"    register the token a member read off /ledger token
   python3 -I server/ledger_admin.py revoke <token | who>   stop accepting it; its uploads no longer count
+  python3 -I server/ledger_admin.py unbind <token | who>   let it upload a new record id (a member's saved file was lost)
   python3 -I server/ledger_admin.py list                   registered tokens and when each last uploaded
   python3 -I server/ledger_admin.py summary                what the records say: thresholds, skill-ups, disenchants
 
@@ -48,6 +49,7 @@ def main():
     add.add_argument("token")
     add.add_argument("label")
     sub.add_parser("revoke").add_argument("token_or_label")
+    sub.add_parser("unbind").add_argument("token_or_label")
     sub.add_parser("list")
     sub.add_parser("summary")
     args = ap.parse_args()
@@ -60,6 +62,8 @@ def main():
         print(f"registered {args.label}")
     elif args.command == "revoke":
         print(f"revoked {lc.revoke_token(con, args.token_or_label)} token(s)")
+    elif args.command == "unbind":
+        print(f"unbound {lc.unbind_token(con, args.token_or_label)} token(s)")
     elif args.command == "list":
         for label, added, revoked, last, origin in con.execute(
                 "SELECT label, added_at, revoked_at, last_upload, origin FROM ledger_tokens ORDER BY added_at"):

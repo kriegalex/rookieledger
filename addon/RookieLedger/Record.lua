@@ -10,6 +10,12 @@
 -- Only numbers: a record holds no name and no text. The server reads the same shape from the saved file
 -- (server/ledger_common.py checks the same bounds).
 --
+-- Every value only ever grows (a range widens, a count goes up), so two versions of a record merge by taking the
+-- wider range and the larger count, and a part of a record can be sent alone. Our own record also keeps
+--   lr[line key] = the change counter at which that line last changed ("c<recipe>", the s key, "d<item>")
+--   lr0          = lines without an entry in lr changed at or before this counter
+-- which is what lets guild sync send only the lines a member is missing. The server ignores both.
+--
 -- Text form, records separated by ";" and fields by ",":
 --   h,build,time   c,recipe,profession,lo0,hi0,...,hi3   s,recipe,skill,colour,crafts,ups
 --   d,item,level,quality,class,n   m,item,material,quantity,times
@@ -22,7 +28,15 @@ local MAX_ID = 9999999
 local MAX_SKILL = 600
 local MAX_COUNT = 1000000
 local MAX_LINES = 6000
-Record.MAX_TEXT = 60000   -- a larger record is not sent in game (about 5 minutes of messages); the app still uploads it
+Record.MAX_REV = 1000000000   -- as the server: a change counter above this is not a real one
+Record.MAX_TEXT = 80000       -- what guild sync carries of one record (400 messages); the app uploads all of it
+
+-- Notes that a line of our own record changes with the next change counter.
+local function Mark(rec, key)
+    if rec.lr then
+        rec.lr[key] = rec.rev + 1
+    end
+end
 
 function Record.New()
     return { rev = 0, t = 0, b = 0, c = {}, s = {}, d = {} }
@@ -49,6 +63,9 @@ function Record.Observe(rec, recipe, profession, colour, skill)
         entry[lo + 1] = skill
         changed = true
     end
+    if changed then
+        Mark(rec, "c" .. recipe)
+    end
     return changed
 end
 
@@ -61,6 +78,7 @@ function Record.Craft(rec, recipe, skill, colour, ups)
     end
     counts[1] = counts[1] + 1
     counts[2] = counts[2] + ups
+    Mark(rec, key)
 end
 
 -- loot: { [material item id] = quantity }
@@ -81,6 +99,50 @@ function Record.Disenchant(rec, item, level, quality, class, loot)
         m[1] = m[1] + quantity
         m[2] = m[2] + 1
     end
+    Mark(rec, "d" .. item)
+end
+
+-- Adds what part knows to rec: the wider range, the larger count. Both are checked records (Record.Parse).
+function Record.Merge(rec, part)
+    rec.t, rec.b = part.t, part.b
+    for recipe, theirs in pairs(part.c) do
+        local ours = rec.c[recipe]
+        if not ours then
+            rec.c[recipe] = theirs
+        else
+            ours[1] = theirs[1]
+            for lo = 2, 8, 2 do
+                if theirs[lo] > 0 and (ours[lo] == 0 or theirs[lo] < ours[lo]) then
+                    ours[lo] = theirs[lo]
+                end
+                ours[lo + 1] = math.max(ours[lo + 1], theirs[lo + 1])
+            end
+        end
+    end
+    for key, theirs in pairs(part.s) do
+        local ours = rec.s[key]
+        if not ours then
+            rec.s[key] = theirs
+        else
+            ours[1], ours[2] = math.max(ours[1], theirs[1]), math.max(ours[2], theirs[2])
+        end
+    end
+    for item, theirs in pairs(part.d) do
+        local ours = rec.d[item]
+        if not ours then
+            rec.d[item] = theirs
+        else
+            ours.l, ours.q, ours.k, ours.n = theirs.l, theirs.q, theirs.k, math.max(ours.n, theirs.n)
+            for material, m in pairs(theirs.m) do
+                local mine = ours.m[material]
+                if not mine then
+                    ours.m[material] = m
+                else
+                    mine[1], mine[2] = math.max(mine[1], m[1]), math.max(mine[2], m[2])
+                end
+            end
+        end
+    end
 end
 
 local function SortedKeys(t)
@@ -97,22 +159,44 @@ local function SortedKeys(t)
     return keys
 end
 
-function Record.Serialize(rec)
+-- The text form of rec, at most MAX_TEXT long: what does not fit is left out, colours first, then disenchants, then
+-- crafts. With since, only the lines of our own record that changed after that change counter.
+function Record.Serialize(rec, since)
     local out = { ("h,%d,%d"):format(rec.b or 0, rec.t or 0) }
-    for _, recipe in ipairs(SortedKeys(rec.c)) do
-        out[#out + 1] = "c," .. recipe .. "," .. table.concat(rec.c[recipe], ",")
+    local size = #out[1]
+    local lr = rec.lr or {}
+    local function Changed(key)
+        return not since or (lr[key] or 0) > since
     end
-    for _, key in ipairs(SortedKeys(rec.s)) do
-        local recipe, skill, colour = key:match("^(%d+):(%d+):(%d)$")
-        if recipe then
-            out[#out + 1] = ("s,%s,%s,%s,%d,%d"):format(recipe, skill, colour, rec.s[key][1], rec.s[key][2])
+    local function Add(line)
+        size = size + #line + 1
+        if size > Record.MAX_TEXT then
+            return false
+        end
+        out[#out + 1] = line
+        return true
+    end
+    local full = false
+    for _, recipe in ipairs(SortedKeys(rec.c)) do
+        if not full and Changed("c" .. recipe) then
+            full = not Add("c," .. recipe .. "," .. table.concat(rec.c[recipe], ","))
         end
     end
     for _, item in ipairs(SortedKeys(rec.d)) do
-        local entry = rec.d[item]
-        out[#out + 1] = ("d,%d,%d,%d,%d,%d"):format(item, entry.l, entry.q, entry.k, entry.n)
-        for _, material in ipairs(SortedKeys(entry.m)) do
-            out[#out + 1] = ("m,%d,%d,%d,%d"):format(item, material, entry.m[material][1], entry.m[material][2])
+        if not full and Changed("d" .. item) then
+            local entry = rec.d[item]
+            full = not Add(("d,%d,%d,%d,%d,%d"):format(item, entry.l, entry.q, entry.k, entry.n))
+            for _, material in ipairs(SortedKeys(entry.m)) do
+                if not full then
+                    full = not Add(("m,%d,%d,%d,%d"):format(item, material, entry.m[material][1], entry.m[material][2]))
+                end
+            end
+        end
+    end
+    for _, key in ipairs(SortedKeys(rec.s)) do
+        local recipe, skill, colour = key:match("^(%d+):(%d+):(%d)$")
+        if recipe and not full and Changed(key) then
+            full = not Add(("s,%s,%s,%s,%d,%d"):format(recipe, skill, colour, rec.s[key][1], rec.s[key][2]))
         end
     end
     return table.concat(out, ";")
@@ -210,7 +294,7 @@ end
 
 -- The record a text describes, or nil if any part of it is not what Serialize writes.
 function Record.Parse(text)
-    if type(text) ~= "string" or #text > Record.MAX_TEXT * 2 then
+    if type(text) ~= "string" or #text > Record.MAX_TEXT then
         return nil
     end
     local rec = Record.New()
