@@ -19,6 +19,9 @@
 -- a change counter above Record.MAX_REV is refused, and an author who hears its own id at a counter it never reached
 -- moves past that counter and sends its real record again. Records are kept per guild: what was received in one
 -- guild is not announced in another.
+--
+-- The sender of a message is a character, so a member who watches could tie a record id to a player. Gathering places
+-- are therefore sent a day late (Record.Release): a record never says where its author is or just was.
 local _, ns = ...
 
 local Sync = {}
@@ -149,6 +152,9 @@ local function Held(id)
 end
 
 local function Hello()
+    if ns.db.sync and Record.Release(ns.db.own, time()) then
+        ns.Touch()   -- gathering places old enough to be shared: a change like any other
+    end
     helloPending = false
     if not Enabled() then
         return

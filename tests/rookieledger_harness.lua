@@ -474,12 +474,18 @@ A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "gather-3", 2575)
 A.loot, A.lootSource = { { 2770, 2 } }, "GameObject-0-4444-0-1-1731-00006A2B11"
 A.fire("LOOT_READY")
 A.loot, A.lootSource = {}, nil
-check("the changed lines of a gather", Record.Serialize(own, own.rev - 1):match("^h,%d+,%d+;g,1731,1,5;y,1731,2770,%d+,%d+;y,1731,2835,1,1;p,1731,1429,432,654,3$"),
+check("the changed lines of a gather say what, not where", Record.Serialize(own, own.rev - 1):match("^h,%d+,%d+;g,1731,1,5;y,1731,2770,%d+,%d+;y,1731,2835,1,1$"),
     Record.Serialize(own, own.rev - 1))
 run(900)
 check("a gather is sent as one small message", A.pieces - sentA == 1, A.pieces - sentA)
-check("gathering reaches both peers", Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own)
-    and C.db.peers[A.db.id].g[1731].p["1429:432:654"] == 3)
+check("the yield reaches both peers at once, the place does not", Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own)
+    and C.db.peers[A.db.id].g[1731].n == 5 and next(C.db.peers[A.db.id].g[1731].p) == nil
+    and not Record.Serialize(own):find(";p,"))
+-- A day later the places are shared: by then they do not say where the player is.
+run(Record.HOLD)
+check("places reach the peers a day later", C.db.peers[A.db.id].g[1731].p["1429:432:654"] == 3
+    and C.db.peers[A.db.id].g[1731].p["1429:600:200"] == 1 and B.db.peers[A.db.id].g[1618].p["1429:100:100"] == 1
+    and Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own) and next(own.hold) == nil)
 
 -- A messaging lockdown (an encounter) holds the queue back instead of dropping it: what the members had to say
 -- during it goes out when it ends, not at their next hello half an hour later.

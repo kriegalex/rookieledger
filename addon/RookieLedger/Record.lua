@@ -20,6 +20,11 @@
 --   lr0          = lines without an entry in lr changed at or before this counter
 -- which is what lets guild sync send only the lines a member is missing. The server ignores both.
 --
+-- A gathering place says where the player stood. So that nobody can follow a player through guild sync, a place is
+-- held back for a day after each gather there before it is sent in game:
+--   hold[place line key] = the time of the last gather there (our own record only)
+-- What a vein or herb gave is sent at once; it does not say where.
+--
 -- Text form, records separated by ";" and fields by ",":
 --   h,build,time   c,recipe,profession,lo0,hi0,...,hi3   s,recipe,skill,colour,crafts,ups
 --   d,item,level,quality,class,n   m,item,material,quantity,times
@@ -36,6 +41,7 @@ local MAX_LINES = 6000
 local MAX_MAP = 100000
 local MAX_PLACES = 2000       -- per kind of node: past that, gathers still count but no new place is noted
 local NEAR = 8                -- thousandths of a map: two gathers this close are the same vein or herb
+Record.HOLD = 86400           -- seconds a gathering place is kept out of guild sync after a gather there
 Record.MAX_REV = 1000000000   -- as the server: a change counter above this is not a real one
 Record.MAX_TEXT = 80000       -- what guild sync carries of one record (400 messages); the app uploads all of it
 
@@ -147,7 +153,23 @@ function Record.Gather(rec, node, kind, loot, map, x, y)
     if key then
         entry.p[key] = (entry.p[key] or 0) + 1
         Mark(rec, "p" .. node .. ":" .. key)
+        if rec.hold then
+            rec.hold["p" .. node .. ":" .. key] = time()
+        end
     end
+end
+
+-- Lets the places gathered at more than a day ago into guild sync, as a change of now. True when there were any.
+function Record.Release(rec, now)
+    local any = false
+    for key, since in pairs(rec.hold or {}) do
+        if now - since >= Record.HOLD or since > now then
+            rec.hold[key] = nil
+            Mark(rec, key)
+            any = true
+        end
+    end
+    return any
 end
 
 -- Adds what part knows to rec: the wider range, the larger count. Both are checked records (Record.Parse).
@@ -229,11 +251,11 @@ end
 
 -- The text form of rec, at most MAX_TEXT long: what does not fit is left out, in the order colours, disenchants,
 -- gathering yields, crafts, gathering places. With since, only the lines of our own record that changed after that
--- change counter.
+-- change counter. Places still held back (see hold above) are never in it.
 function Record.Serialize(rec, since)
     local out = { ("h,%d,%d"):format(rec.b or 0, rec.t or 0) }
     local size = #out[1]
-    local lr = rec.lr or {}
+    local lr, hold = rec.lr or {}, rec.hold or {}
     local function Changed(key)
         return not since or (lr[key] or 0) > since
     end
@@ -270,7 +292,7 @@ function Record.Serialize(rec, since)
         local own = Changed("g" .. node)
         places[node] = {}
         for _, place in ipairs(SortedKeys(entry.p)) do
-            if Changed("p" .. node .. ":" .. place) then
+            if Changed("p" .. node .. ":" .. place) and not hold["p" .. node .. ":" .. place] then
                 places[node][#places[node] + 1] = place
             end
         end

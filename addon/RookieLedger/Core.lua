@@ -127,6 +127,9 @@ local function InitDB()
     if type(own.lr) ~= "table" or type(own.lr0) ~= "number" then
         own.lr, own.lr0 = {}, own.rev   -- see Record.lua: which lines changed when is known from here on
     end
+    if type(own.hold) ~= "table" then
+        own.hold = {}
+    end
     if type(db.peers) ~= "table" then
         db.peers = {}
     end
