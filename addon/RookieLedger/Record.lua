@@ -1,24 +1,29 @@
 -- Record.lua: one account's observations, and the text form guild sync sends.
 --
--- A record is { rev, t, b, c, s, d }: a change counter, the time and game build of the last change, and
+-- A record is { rev, t, b, c, s, d, g }: a change counter, the time and game build of the last change, and
 --   c[recipe] = { profession, lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3 }
 --       the lowest and highest skill at which the recipe showed each colour (0 orange, 1 yellow, 2 green, 3 grey;
 --       0 = never seen in that colour)
 --   s["recipe:skill:colour"] = { crafts, skillUps }
 --   d[item] = { l = item level, q = quality, k = class (2 weapon, 4 armor), n = disenchants,
 --               m = { [material] = { quantity, times } } }
+--   g[node] = { k = kind (1 mining, 2 herbalism), n = gathers, m = { [material] = { quantity, times } },
+--               p = { ["map:x:y"] = gathers there } }
+--       node is the game's id of the vein or herb, map its map id, x and y the place on that map in thousandths
 -- Only numbers: a record holds no name and no text. The server reads the same shape from the saved file
 -- (server/ledger_common.py checks the same bounds).
 --
 -- Every value only ever grows (a range widens, a count goes up), so two versions of a record merge by taking the
 -- wider range and the larger count, and a part of a record can be sent alone. Our own record also keeps
---   lr[line key] = the change counter at which that line last changed ("c<recipe>", the s key, "d<item>")
+--   lr[line key] = the change counter at which that line last changed ("c<recipe>", the s key, "d<item>",
+--                  "g<node>", "p<node>:<map>:<x>:<y>")
 --   lr0          = lines without an entry in lr changed at or before this counter
 -- which is what lets guild sync send only the lines a member is missing. The server ignores both.
 --
 -- Text form, records separated by ";" and fields by ",":
 --   h,build,time   c,recipe,profession,lo0,hi0,...,hi3   s,recipe,skill,colour,crafts,ups
 --   d,item,level,quality,class,n   m,item,material,quantity,times
+--   g,node,kind,n   y,node,material,quantity,times   p,node,map,x,y,times
 local _, ns = ...
 
 local Record = {}
@@ -28,6 +33,9 @@ local MAX_ID = 9999999
 local MAX_SKILL = 600
 local MAX_COUNT = 1000000
 local MAX_LINES = 6000
+local MAX_MAP = 100000
+local MAX_PLACES = 2000       -- per kind of node: past that, gathers still count but no new place is noted
+local NEAR = 8                -- thousandths of a map: two gathers this close are the same vein or herb
 Record.MAX_REV = 1000000000   -- as the server: a change counter above this is not a real one
 Record.MAX_TEXT = 80000       -- what guild sync carries of one record (400 messages); the app uploads all of it
 
@@ -39,7 +47,7 @@ local function Mark(rec, key)
 end
 
 function Record.New()
-    return { rev = 0, t = 0, b = 0, c = {}, s = {}, d = {} }
+    return { rev = 0, t = 0, b = 0, c = {}, s = {}, d = {}, g = {} }
 end
 
 -- Notes that recipe showed colour at skill. True when that widened a range.
@@ -102,9 +110,69 @@ function Record.Disenchant(rec, item, level, quality, class, loot)
     Mark(rec, "d" .. item)
 end
 
+-- loot: { [material item id] = quantity }; map, x, y: where the player stood (x, y in thousandths), or nil.
+function Record.Gather(rec, node, kind, loot, map, x, y)
+    local entry = rec.g[node]
+    if not entry then
+        entry = { k = kind, n = 0, m = {}, p = {} }
+        rec.g[node] = entry
+    end
+    entry.k = kind
+    entry.n = entry.n + 1
+    for material, quantity in pairs(loot) do
+        local m = entry.m[material]
+        if not m then
+            m = { 0, 0 }
+            entry.m[material] = m
+        end
+        m[1] = m[1] + quantity
+        m[2] = m[2] + 1
+    end
+    Mark(rec, "g" .. node)
+    if not map then
+        return
+    end
+    -- The place already noted for this vein or herb, if we stood about there before; else a new one.
+    local key, places = nil, 0
+    for place in pairs(entry.p) do
+        places = places + 1
+        local pm, px, py = place:match("^(%d+):(%d+):(%d+)$")
+        if tonumber(pm) == map and math.abs(tonumber(px) - x) <= NEAR and math.abs(tonumber(py) - y) <= NEAR then
+            key = place
+        end
+    end
+    if not key and places < MAX_PLACES then
+        key = map .. ":" .. x .. ":" .. y
+    end
+    if key then
+        entry.p[key] = (entry.p[key] or 0) + 1
+        Mark(rec, "p" .. node .. ":" .. key)
+    end
+end
+
 -- Adds what part knows to rec: the wider range, the larger count. Both are checked records (Record.Parse).
 function Record.Merge(rec, part)
     rec.t, rec.b = part.t, part.b
+    rec.g = rec.g or {}
+    for node, theirs in pairs(part.g) do
+        local ours = rec.g[node]
+        if not ours then
+            rec.g[node] = theirs
+        else
+            ours.k, ours.n = theirs.k, math.max(ours.n, theirs.n)
+            for material, m in pairs(theirs.m) do
+                local mine = ours.m[material]
+                if not mine then
+                    ours.m[material] = m
+                else
+                    mine[1], mine[2] = math.max(mine[1], m[1]), math.max(mine[2], m[2])
+                end
+            end
+            for place, times in pairs(theirs.p) do
+                ours.p[place] = math.max(ours.p[place] or 0, times)
+            end
+        end
+    end
     for recipe, theirs in pairs(part.c) do
         local ours = rec.c[recipe]
         if not ours then
@@ -159,8 +227,9 @@ local function SortedKeys(t)
     return keys
 end
 
--- The text form of rec, at most MAX_TEXT long: what does not fit is left out, colours first, then disenchants, then
--- crafts. With since, only the lines of our own record that changed after that change counter.
+-- The text form of rec, at most MAX_TEXT long: what does not fit is left out, in the order colours, disenchants,
+-- gathering yields, crafts, gathering places. With since, only the lines of our own record that changed after that
+-- change counter.
 function Record.Serialize(rec, since)
     local out = { ("h,%d,%d"):format(rec.b or 0, rec.t or 0) }
     local size = #out[1]
@@ -193,10 +262,43 @@ function Record.Serialize(rec, since)
             end
         end
     end
+    -- A node's g line goes out when it or one of its places changed: the places below need it to be read.
+    local gathered = rec.g or {}
+    local nodes, places = SortedKeys(gathered), {}
+    for _, node in ipairs(nodes) do
+        local entry = gathered[node]
+        local own = Changed("g" .. node)
+        places[node] = {}
+        for _, place in ipairs(SortedKeys(entry.p)) do
+            if Changed("p" .. node .. ":" .. place) then
+                places[node][#places[node] + 1] = place
+            end
+        end
+        if not full and (own or places[node][1]) then
+            full = not Add(("g,%d,%d,%d"):format(node, entry.k, entry.n))
+            if full then
+                places[node] = {}
+            end
+            for _, material in ipairs(SortedKeys(entry.m)) do
+                if own and not full then
+                    full = not Add(("y,%d,%d,%d,%d"):format(node, material, entry.m[material][1], entry.m[material][2]))
+                end
+            end
+        else
+            places[node] = {}
+        end
+    end
     for _, key in ipairs(SortedKeys(rec.s)) do
         local recipe, skill, colour = key:match("^(%d+):(%d+):(%d)$")
         if recipe and not full and Changed(key) then
             full = not Add(("s,%s,%s,%s,%d,%d"):format(recipe, skill, colour, rec.s[key][1], rec.s[key][2]))
+        end
+    end
+    for _, node in ipairs(nodes) do
+        for _, place in ipairs(places[node]) do
+            if not full then
+                full = not Add(("p,%d,%s,%d"):format(node, (place:gsub(":", ",")), gathered[node].p[place]))
+            end
         end
     end
     return table.concat(out, ";")
@@ -289,6 +391,53 @@ function PARSERS.m(rec, f)
         return false
     end
     entry.m[material] = { quantity, times }
+    return true
+end
+
+function PARSERS.g(rec, f)
+    if #f ~= 4 then
+        return false
+    end
+    local node, kind, n = Int(f[2], 1, MAX_ID), Int(f[3], 1, 2), Int(f[4], 1, MAX_COUNT)
+    if not (node and kind and n) or rec.g[node] then
+        return false
+    end
+    rec.g[node] = { k = kind, n = n, m = {}, p = {} }
+    return true
+end
+
+function PARSERS.y(rec, f)
+    if #f ~= 5 then
+        return false
+    end
+    local node, material = Int(f[2], 1, MAX_ID), Int(f[3], 1, MAX_ID)
+    local quantity, times = Int(f[4], 1, MAX_COUNT * 20), Int(f[5], 1, MAX_COUNT)
+    local entry = node and rec.g[node]
+    if not (entry and material and quantity and times) or entry.m[material] then
+        return false
+    end
+    if times > entry.n or quantity < times or quantity > times * 20 then
+        return false
+    end
+    entry.m[material] = { quantity, times }
+    return true
+end
+
+function PARSERS.p(rec, f)
+    if #f ~= 6 then
+        return false
+    end
+    local node, map, x, y = Int(f[2], 1, MAX_ID), Int(f[3], 1, MAX_MAP), Int(f[4], 0, 1000), Int(f[5], 0, 1000)
+    local times = Int(f[6], 1, MAX_COUNT)
+    local entry = node and rec.g[node]
+    if not (entry and map and x and y and times) or times > entry.n then
+        return false
+    end
+    local place = map .. ":" .. x .. ":" .. y
+    if entry.p[place] then
+        return false
+    end
+    entry.p[place] = times
     return true
 end
 

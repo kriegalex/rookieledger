@@ -53,6 +53,26 @@ RookieLedgerDB = {
 },
 },
 },
+["g"] = {
+[1731] = {
+["k"] = 1,
+["n"] = 4,
+["m"] = {
+[2770] = {
+9, -- [1]
+4, -- [2]
+},
+[2835] = {
+1, -- [1]
+1, -- [2]
+},
+},
+["p"] = {
+["1429:432:654"] = 3,
+["1429:600:200"] = 1,
+},
+},
+},
 },
 ["peers"] = {
 ["aaaaaaaa"] = {
@@ -119,6 +139,9 @@ class Checks(unittest.TestCase):
         self.assertEqual(own["c"]["7421"], [333, 125, 126, 0, 0, 0, 0, 0, 0])
         self.assertEqual(own["s"], {"7421:125:0": [3, 3]})
         self.assertEqual(own["d"]["2584"], {"l": 16, "q": 2, "k": 4, "n": 2, "m": {"10940": [4, 2]}})
+        self.assertEqual(own["g"]["1731"], {"k": 1, "n": 4, "m": {"2770": [9, 4], "2835": [1, 1]},
+                                            "p": {"1429:432:654": 3, "1429:600:200": 1}})
+        self.assertEqual(peers["aaaaaaaa"]["g"], {}, "a record from before gathering was recorded")
         self.assertEqual(list(peers), ["aaaaaaaa"], "a peer that fails the checks is left out")
         self.assertNotIn("token", json.dumps([own, peers]))
 
@@ -129,6 +152,10 @@ class Checks(unittest.TestCase):
                          ("3, -- [1]\n3, -- [2]", '3, -- [1]\n["x"] = 3,'),             # a list with a named field
                          ("4, -- [1]\n2, -- [2]", "400, -- [1]\n2, -- [2]"),              # 200 dust per disenchant
                          ('["id"] = "0876cf1e"', '["id"] = "Some Player"'),
+                         ('["1429:432:654"] = 3', '["1429:1432:654"] = 3'),      # a place off the map
+                         ('["1429:432:654"] = 3', '["Elwynn:432:654"] = 3'),     # a place that is not numbers
+                         ('["1429:432:654"] = 3', '["1429:432:654"] = 5'),       # more gathers there than gathers
+                         ('["k"] = 1', '["k"] = 3'),                             # neither vein nor herb
                          ('["v"] = 1', '["v"] = 2')):
             self.assertIn(old, SAVED)
             with self.assertRaises(lc.LedgerError, msg=new):
@@ -152,6 +179,9 @@ class Reading(unittest.TestCase):
         self.assertFalse(t["conflict"])
         self.assertEqual(lc.skill_up_rates(records), {(7421, 0): (3, 3)})
         self.assertEqual(lc.disenchant_yields(records), {(2, 4, 16): {"n": 2, "materials": {10940: (2.0, 1.0)}}})
+        self.assertEqual(lc.gather_yields(records), {1731: {
+            "kind": 1, "n": 4, "materials": {2770: (2.25, 1.0), 2835: (0.25, 0.25)},
+            "places": {(1429, 432, 654): 3, (1429, 600, 200): 1}}})
 
     def test_overlapping_colours_are_a_conflict(self):
         records = {"a": {"c": {"1": [333, 100, 130, 125, 140, 0, 0, 0, 0]}, "s": {}, "d": {}}}
@@ -231,6 +261,8 @@ class Endpoint(unittest.TestCase):
         self.assertIn("recipe 7421: orange 125-126 yellow 131-140  yellow>126,<=131", out.getvalue())
         self.assertIn("recipe 7421 orange: 3/3 = 100%", out.getvalue())
         self.assertIn("item 10940: 2.00 each, in 100%", out.getvalue())
+        self.assertIn("vein 1731, 4 gathers at 2 places: item 2770: 2.25 each, in 100%, item 2835: 0.25 each, in 25%",
+                      out.getvalue())
         con.close()
 
     def test_own_upload_wins_over_a_relayed_copy(self):
@@ -270,11 +302,15 @@ class Endpoint(unittest.TestCase):
         self.register()
         with mock.patch.object(lc, "MAX_ENTRIES", 2):
             status, body = self.call("upload", body=SAVED.encode())
-        self.assertEqual((status, json.loads(body)["skipped"]), (200, 1))
+        self.assertEqual((status, json.loads(body)["skipped"]), (200, 2))
         con = lc.connect(self.db)
         own = lc.current_records(con)["0876cf1e"]
         con.close()
-        self.assertEqual((len(own["c"]), len(own["d"]), len(own["s"])), (1, 1, 0), "colours and disenchants come first")
+        self.assertEqual((len(own["c"]), len(own["d"]), len(own["g"]), len(own["s"])), (1, 1, 0, 0),
+                         "colours and disenchants come first")
+        with mock.patch.object(lc, "MAX_PLACES", 1):
+            cut = lc.check_db(lc.parse_saved_variables(SAVED))[1]
+        self.assertEqual((len(cut["g"]["1731"]["p"]), cut["skipped"]), (1, 1))
 
     def test_refuses_bad_uploads(self):
         self.register()
@@ -326,6 +362,9 @@ class Addon(unittest.TestCase):
             self.assertEqual(relayed[origin]["c"], own["c"])
             self.assertEqual(relayed[origin]["s"], own["s"])
             self.assertEqual(relayed[origin]["d"], own["d"])
+            self.assertEqual(own["g"]["1731"]["m"]["2835"], [1, 1])
+            self.assertEqual(own["g"]["1731"]["p"]["1429:600:200"], 1)
+            self.assertEqual(relayed[origin]["g"], own["g"])
 
 
 if __name__ == "__main__":

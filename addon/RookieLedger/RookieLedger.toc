@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: RookieLedger
-## Notes: Records what the game shows about professions (recipe colours, skill-ups, disenchant results) and shares it with the guild.
-## Notes-frFR: Note ce que le jeu montre des métiers (couleur des recettes, points de compétence, résultats de désenchantement) et le partage avec la guilde.
+## Notes: Records what the game shows about professions (recipe colours, skill-ups, disenchant results, what veins and herbs give and where) and shares it with the guild.
+## Notes-frFR: Note ce que le jeu montre des métiers (couleur des recettes, points de compétence, résultats de désenchantement, ce que donnent filons et plantes et où) et le partage avec la guilde.
 ## Author: Rookies
 ## Category-enUS: Professions
 ## Category-frFR: Métiers

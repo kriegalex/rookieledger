@@ -5,7 +5,8 @@
   python3 -I server/ledger_admin.py revoke <token | who>   stop accepting it; its uploads no longer count
   python3 -I server/ledger_admin.py unbind <token | who>   let it upload a new record id (a member's saved file was lost)
   python3 -I server/ledger_admin.py list                   registered tokens and when each last uploaded
-  python3 -I server/ledger_admin.py summary                what the records say: thresholds, skill-ups, disenchants
+  python3 -I server/ledger_admin.py summary                what the records say: thresholds, skill-ups, disenchants,
+                                                           gathering yields and how many places each node was found at
 
 The upload endpoint notices a new or revoked token within 15 seconds; nothing needs restarting.
 """
@@ -38,6 +39,12 @@ def summary(con, out=sys.stdout):
     for (quality, klass, level), y in sorted(yields.items()):
         parts = ", ".join(f"item {m}: {avg:.2f} each, in {share:.0%}" for m, (avg, share) in sorted(y["materials"].items()))
         print(f"  quality {quality} {'weapon' if klass == 2 else 'armor'} item level {level}, {y['n']} disenchants: {parts}",
+              file=out)
+    gathered = lc.gather_yields(records)
+    print(f"\ngathering ({len(gathered)} kinds of vein and herb)", file=out)
+    for node, y in sorted(gathered.items()):
+        parts = ", ".join(f"item {m}: {avg:.2f} each, in {share:.0%}" for m, (avg, share) in sorted(y["materials"].items()))
+        print(f"  {'vein' if y['kind'] == 1 else 'herb'} {node}, {y['n']} gathers at {len(y['places'])} places: {parts}",
               file=out)
 
 

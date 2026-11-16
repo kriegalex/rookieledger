@@ -145,7 +145,7 @@ local function Held(id)
         return ns.db.own
     end
     local rec = ns.db.peers[id]
-    return rec and rec.g == GuildKey() and rec or nil
+    return rec and rec.guild == GuildKey() and rec or nil
 end
 
 local function Hello()
@@ -156,10 +156,13 @@ local function Hello()
     local key = GuildKey()
     local pairsList = {}
     for id, rec in pairs(ns.db.peers) do
-        if rec.g == nil then
-            rec.g = key   -- kept by a version that did not note the guild: this one
+        if type(rec.g) ~= "table" then
+            rec.g = {}   -- kept by a version without gathering, which noted the guild under this name
         end
-        if rec.g == key then
+        if rec.guild == nil then
+            rec.guild = key   -- kept by a version that did not note the guild: this one
+        end
+        if rec.guild == key then
             pairsList[#pairsList + 1] = id .. "," .. rec.rev
         end
     end
@@ -333,7 +336,7 @@ local function OnData(id, rev, base, part, parts, text)
     end
     rec.rev = rev
     rec.at = time()
-    rec.g = key
+    rec.guild = key
     ns.db.peers[id] = rec
     TrimPeers()
 end

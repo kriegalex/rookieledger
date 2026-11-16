@@ -39,9 +39,9 @@ end
 
 local TEXTS = {
     enUS = {
-        loaded = "recording recipe colours, skill-ups and disenchants. /ledger for details.",
+        loaded = "recording recipe colours, skill-ups, disenchants and what veins and herbs give, and where. /ledger for details.",
         first = "to add your data to the guild site, give your token to the guild's ledger keeper: /ledger token",
-        status = "%d recipes with a colour, %d crafts, %d disenchants; %d guild records received; guild sync %s.",
+        status = "%d recipes with a colour, %d crafts, %d disenchants, %d veins and herbs gathered; %d guild records received; guild sync %s.",
         on = "on", off = "off",
         token = "Your token (Ctrl+C to copy). Give it to the guild's ledger keeper, to nobody else:",
         tokenChat = "token: %s",
@@ -50,9 +50,9 @@ local TEXTS = {
         skipped = "a skill bonus is active (racial or item): colours are not recorded for this profession while it lasts.",
     },
     frFR = {
-        loaded = "note la couleur des recettes, les points de compétence et les désenchantements. /ledger pour le détail.",
+        loaded = "note la couleur des recettes, les points de compétence, les désenchantements et ce que donnent filons et plantes, et où. /ledger pour le détail.",
         first = "pour ajouter vos données au site de la guilde, donner votre jeton au responsable du registre : /ledger token",
-        status = "%d recettes avec une couleur, %d fabrications, %d désenchantements ; %d registres de guilde reçus ; synchronisation de guilde %s.",
+        status = "%d recettes avec une couleur, %d fabrications, %d désenchantements, %d filons et plantes récoltés ; %d registres de guilde reçus ; synchronisation de guilde %s.",
         on = "activée", off = "désactivée",
         token = "Votre jeton (Ctrl+C pour copier). À donner au responsable du registre de la guilde, à personne d'autre :",
         tokenChat = "jeton : %s",
@@ -114,7 +114,7 @@ local function InitDB()
         db.own = ns.Record.New()
     end
     local own = db.own
-    for _, section in ipairs({ "c", "s", "d" }) do
+    for _, section in ipairs({ "c", "s", "d", "g" }) do
         if type(own[section]) ~= "table" then
             own[section] = {}
         end
@@ -186,14 +186,17 @@ end
 
 local function Status()
     local own = ns.db.own
-    local crafts, disenchants = 0, 0
+    local crafts, disenchants, gathers = 0, 0, 0
+    for _, node in pairs(own.g) do
+        gathers = gathers + node.n
+    end
     for _, counts in pairs(own.s) do
         crafts = crafts + counts[1]
     end
     for _, item in pairs(own.d) do
         disenchants = disenchants + item.n
     end
-    ns.Print(ns.L.status, Count(own.c), crafts, disenchants, Count(ns.db.peers), ns.db.sync and ns.L.on or ns.L.off)
+    ns.Print(ns.L.status, Count(own.c), crafts, disenchants, gathers, Count(ns.db.peers), ns.db.sync and ns.L.on or ns.L.off)
 end
 
 local function Command(text)

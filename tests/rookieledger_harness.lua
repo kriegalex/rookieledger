@@ -92,6 +92,7 @@ local function newClient(name)
                 assert(not (other.db and text:find(other.db.token, 1, true)), "a token in an addon message")
             end
             c.sent = c.sent + 1
+            c.pieces = (c.pieces or 0) + (text:sub(1, 2) == "P," and 1 or 0)   -- messages that carry a record
             for _, other in ipairs(clients) do
                 if other.online and other.guild == c.guild then
                     other.fire("CHAT_MSG_ADDON", prefix, text, channel, c.name)
@@ -147,6 +148,17 @@ local function newClient(name)
     env.GetLootSlotLink = function(slot) return "|Hitem:" .. c.loot[slot][1] .. "::|h[m]|h" end
     env.GetLootSlotInfo = function(slot) return 1, "m", c.loot[slot][2] end
     env.GetLootSourceInfo = function() return c.lootSource end   -- nil: this client names no source
+    env.C_Spell = { GetSpellName = function(id)
+        return ({ [2575] = "Minage", [2576] = "Minage", [2366] = "Cueillette", [3570] = "Cueillette", [585] = "Châtiment" })[id]
+    end }
+    env.C_Map = {
+        GetBestMapForUnit = function() return c.place and c.place[1] end,
+        GetPlayerMapPosition = function(map)
+            if c.place and c.place[1] == map and c.place[2] then
+                return { GetXY = function() return c.place[2], c.place[3] end }
+            end
+        end,
+    }
 
     function c.fire(event, ...)
         for _, frame in ipairs(c.frames) do
@@ -326,6 +338,44 @@ A.fire("BAG_UPDATE_DELAYED")
 check("a result window just before the cast's end counts", own.d[7003] and own.d[7003].m[10940][1] == 1)
 A.loot = {}
 
+-- Gathering: the vein the loot window names, what it gave and where the player stood.
+local function gatherOnce(spell, node, loot, place)
+    A.place = place
+    A.fire("UNIT_SPELLCAST_START", "player", "gather", spell)
+    run(2)
+    A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "gather", spell)
+    A.loot, A.lootSource = loot, node and ("GameObject-0-4444-0-1-" .. node .. "-00006A2B11")
+    A.fire("LOOT_READY")
+    A.fire("LOOT_READY")   -- the game may say it twice for one window
+    A.loot, A.lootSource = {}, nil
+    run(1)
+end
+gatherOnce(2575, 1731, { { 2770, 3 }, { 2835, 1 } }, { 1429, 0.4321, 0.6543 })
+local vein = own.g[1731]
+check("a mined vein: yield and place", vein and vein.k == 1 and vein.n == 1 and vein.m[2770][1] == 3 and vein.m[2770][2] == 1
+    and vein.m[2835][1] == 1 and vein.p["1429:432:654"] == 1)
+gatherOnce(2576, 1731, { { 2770, 2 } }, { 1429, 0.4350, 0.6510 })   -- a higher rank, a step to the side
+check("the same vein again is the same place", vein.n == 2 and vein.m[2770][1] == 5 and vein.m[2835][2] == 1
+    and vein.p["1429:432:654"] == 2 and next(vein.p, next(vein.p)) == nil)
+gatherOnce(2575, 1731, { { 2770, 1 } }, { 1429, 0.6000, 0.2000 })
+check("another vein of the kind is another place", vein.n == 3 and vein.p["1429:600:200"] == 1)
+gatherOnce(3570, 1618, { { 2447, 2 } }, { 1429, 0.1, 0.1 })
+check("a herb gathered with a higher rank", own.g[1618] and own.g[1618].k == 2 and own.g[1618].m[2447][1] == 2)
+gatherOnce(2575, 1731, { { 2770, 1 } }, nil)
+check("a gather without a position still counts", vein.n == 4 and vein.p["1429:432:654"] == 2)
+local revAfterGather = own.rev
+gatherOnce(2575, nil, { { 2770, 1 } }, { 1429, 0.5, 0.5 })   -- a loot window that names no vein
+A.loot, A.lootSource = { { 2589, 2 } }, "Creature-0-4444-0-1-299-0000000001"
+A.fire("LOOT_READY")
+A.loot, A.lootSource = {}, nil
+check("only a loot window that names a vein or herb is a gather", own.rev == revAfterGather and vein.n == 4)
+A.fire("UNIT_SPELLCAST_START", "player", "gather-2", 2575)
+A.fire("UNIT_SPELLCAST_INTERRUPTED", "player", "gather-2", 2575)
+A.loot, A.lootSource = { { 2770, 1 } }, "GameObject-0-4444-0-1-1731-00006A2B11"
+A.fire("LOOT_READY")
+A.loot, A.lootSource = {}, nil
+check("an interrupted gather records nothing", vein.n == 4)
+
 -- A skill bonus stops the recording for that profession.
 A.window = 197
 A.profs[2].bonus = 15
@@ -350,6 +400,10 @@ for name, bad in pairs({
     ["more ups than crafts allow"] = "h,1,1;s,7418,125,1,1,9",
     ["material without item"] = "h,1,1;m,2584,10940,2,1",
     ["duplicate recipe"] = "h,1,1;c,7421,333,125,126,0,0,0,0,0,0;c,7421,333,125,126,0,0,0,0,0,0",
+    ["place without node"] = "h,1,1;p,1731,1429,432,654,1",
+    ["place off the map"] = "h,1,1;g,1731,1,2;p,1731,1429,1001,654,1",
+    ["more gathers at a place than gathers"] = "h,1,1;g,1731,1,2;p,1731,1429,432,654,3",
+    ["unknown kind of node"] = "h,1,1;g,1731,3,2",
     ["unknown kind"] = "h,1,1;x,1",
     ["empty"] = "",
 }) do
@@ -357,10 +411,13 @@ for name, bad in pairs({
 end
 
 -- A part of a record adds to the copy a member holds: the wider range, the larger count.
-local whole = Record.Parse("h,1,1;c,7421,333,125,126,0,0,0,0,0,0;d,2584,16,2,4,1;m,2584,10940,2,1;s,7418,125,1,2,1")
-Record.Merge(whole, Record.Parse("h,2,2;c,7421,333,120,125,130,131,0,0,0,0;d,2584,16,2,4,3;m,2584,10939,1,1;s,7418,125,1,5,2"))
+local whole = Record.Parse("h,1,1;c,7421,333,125,126,0,0,0,0,0,0;d,2584,16,2,4,1;m,2584,10940,2,1;g,1731,1,2;y,1731,2770,5,2;"
+    .. "s,7418,125,1,2,1;p,1731,1429,432,654,2")
+Record.Merge(whole, Record.Parse("h,2,2;c,7421,333,120,125,130,131,0,0,0,0;d,2584,16,2,4,3;m,2584,10939,1,1;g,1731,1,4;y,1731,2835,1,1;"
+    .. "s,7418,125,1,5,2;p,1731,1429,432,654,3;p,1731,1429,600,200,1"))
 check("a part merges into a held record", Record.Serialize(whole)
-    == "h,2,2;c,7421,333,120,126,130,131,0,0,0,0;d,2584,16,2,4,3;m,2584,10939,1,1;m,2584,10940,2,1;s,7418,125,1,5,2",
+    == "h,2,2;c,7421,333,120,126,130,131,0,0,0,0;d,2584,16,2,4,3;m,2584,10939,1,1;m,2584,10940,2,1;g,1731,1,4;y,1731,2770,5,2;"
+    .. "y,1731,2835,1,1;s,7418,125,1,5,2;p,1731,1429,432,654,3;p,1731,1429,600,200,1",
     Record.Serialize(whole))
 -- A record larger than guild sync carries is cut, not withheld.
 local big = Record.New()
@@ -402,14 +459,27 @@ check("a change reaches both peers", B.db.peers[A.db.id].rev == own.rev and C.db
     and B.db.peers[A.db.id].c[7421][3] == 127)
 
 -- One more craft: only the changed line travels, not the whole record again.
-local sentA = A.sent
+local sentA = A.pieces
 A.fire("UNIT_SPELLCAST_START", "player", "cast-8", 7418)
 run(3)
 A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-8", 7418)
 run(900)
-check("a change is sent as one small message", A.sent - sentA <= 2, A.sent - sentA)
+check("a change is sent as one small message", A.pieces - sentA == 1, A.pieces - sentA)
 check("the part brings both peers up to date", Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own)
     and Record.Serialize(C.db.peers[A.db.id]) == Record.Serialize(own) and C.db.peers[A.db.id].rev == own.rev)
+-- A gather at a vein mined before sends that vein's line and that one place, not every place of the kind.
+sentA = A.pieces
+A.place = { 1429, 0.4321, 0.6543 }
+A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "gather-3", 2575)
+A.loot, A.lootSource = { { 2770, 2 } }, "GameObject-0-4444-0-1-1731-00006A2B11"
+A.fire("LOOT_READY")
+A.loot, A.lootSource = {}, nil
+check("the changed lines of a gather", Record.Serialize(own, own.rev - 1):match("^h,%d+,%d+;g,1731,1,5;y,1731,2770,%d+,%d+;y,1731,2835,1,1;p,1731,1429,432,654,3$"),
+    Record.Serialize(own, own.rev - 1))
+run(900)
+check("a gather is sent as one small message", A.pieces - sentA == 1, A.pieces - sentA)
+check("gathering reaches both peers", Record.Serialize(B.db.peers[A.db.id]) == Record.Serialize(own)
+    and C.db.peers[A.db.id].g[1731].p["1429:432:654"] == 3)
 
 -- A messaging lockdown (an encounter) holds the queue back instead of dropping it: what the members had to say
 -- during it goes out when it ends, not at their next hello half an hour later.

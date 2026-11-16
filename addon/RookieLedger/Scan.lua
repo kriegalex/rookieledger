@@ -4,6 +4,8 @@
 --   current skill (C_TradeSkillUI.GetRecipeInfo().relativeDifficulty: 0 orange, 1 yellow, 2 green, 3 grey).
 -- Skill-ups: for each craft of a recipe we have seen in a window, the skill and colour before it and the points gained.
 -- Disenchants: the item that left the bags during a Disenchant cast, and what the loot window it opened held.
+-- Gathering: after a Mining or Herb Gathering cast, the vein or herb the loot window names as its source, what it
+--   held, and where on the map the player stood.
 --
 -- Nothing is recorded for a profession while its skill carries a bonus (racial, enchant, lure): colours and
 -- skill-ups follow the boosted skill, and mixing the two would blur the thresholds.
@@ -27,6 +29,8 @@ local SETTLE = 1.5          -- after a skill point: the window's colours follow 
 local UPS_DELAY = 1.2       -- after a craft, before reading the points it gave
 local DISENCHANT_TIMEOUT = 10
 local EARLY_LOOT = 0.5      -- a loot window this shortly before the cast's end is taken for its result
+local GATHER = { [2575] = 1, [2366] = 2 }   -- Mining, Herb Gathering: the kind of node (see Record.lua)
+local GATHER_TIMEOUT = 10   -- from the start of the cast to its loot window
 
 local timers = {}
 
@@ -327,6 +331,87 @@ local function ResolveDisenchant()
     ns.Touch()
 end
 
+-- Gathering ------------------------------------------------------------------
+
+local SpellName = (C_Spell and C_Spell.GetSpellName) or GetSpellInfo
+local gatherNames   -- [spell name] = kind: the higher ranks are other spells under the same name
+
+-- 1 for a mining cast, 2 for a herb gathering one, nil for any other spell.
+local function GatherKind(spell)
+    if GATHER[spell] then
+        return GATHER[spell]
+    end
+    if not gatherNames then
+        gatherNames = {}
+        for id, kind in pairs(GATHER) do
+            local name = ns.Plain((ns.Try(SpellName, id)))
+            if type(name) == "string" then
+                gatherNames[name] = kind
+            end
+        end
+    end
+    local name = ns.Plain((ns.Try(SpellName, spell)))
+    return type(name) == "string" and gatherNames[name] or nil
+end
+
+local gather   -- the gathering cast under way: { kind, t, cast }
+
+-- Where the player stands: map id and x, y in thousandths of that map, or nil (the client gives none in instances).
+local function Place()
+    local Map = C_Map or {}
+    local map = ns.Plain((ns.Try(Map.GetBestMapForUnit, "player")))
+    if type(map) ~= "number" or map < 1 then
+        return nil
+    end
+    local position = ns.Try(Map.GetPlayerMapPosition, map, "player")
+    if type(position) ~= "table" or type(position.GetXY) ~= "function" then
+        return nil
+    end
+    local x, y = ns.Try(position.GetXY, position)
+    x, y = ns.Plain(x), ns.Plain(y)
+    if type(x) ~= "number" or type(y) ~= "number" or x < 0 or x > 1 or y < 0 or y > 1 then
+        return nil
+    end
+    return map, math.floor(x * 1000 + 0.5), math.floor(y * 1000 + 0.5)
+end
+
+-- The game's id of the vein or herb the open loot window comes from, or nil: the window must name a world object
+-- (not a corpse, not an item) as the source of what it holds.
+local function LootNode()
+    if type(GetLootSourceInfo) ~= "function" then
+        return nil
+    end
+    local node
+    for slot = 1, ns.Try(GetNumLootItems) or 0 do
+        local source = ns.Plain((ns.Try(GetLootSourceInfo, slot)))
+        if type(source) == "string" then
+            local id = tonumber(source:match("^GameObject%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
+            if not id or (node and node ~= id) then
+                return nil
+            end
+            node = id
+        end
+    end
+    return node
+end
+
+-- A loot window opened after a gathering cast.
+local function GatherLoot()
+    local g = gather
+    if not g or GetTime() - g.t > GATHER_TIMEOUT then
+        gather = nil
+        return
+    end
+    local node = LootNode()
+    local loot = node and ReadLoot()
+    if not loot then
+        return
+    end
+    gather = nil
+    Record.Gather(ns.db.own, node, g.kind, loot, Place())
+    ns.Touch()
+end
+
 -- Events ---------------------------------------------------------------------
 
 local function OnSpellcast(event, unit, cast, spell)
@@ -347,6 +432,15 @@ local function OnSpellcast(event, unit, cast, spell)
             end
         elseif destroy and not OtherCast(destroy.cast, cast) then
             destroy = nil
+        end
+    elseif GatherKind(spell) then
+        if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_SUCCEEDED" then
+            -- The start for a cast with a bar; the end also covers one without.
+            if not gather or gather.cast ~= cast then
+                gather = { kind = GatherKind(spell), t = GetTime(), cast = cast }
+            end
+        elseif gather and not OtherCast(gather.cast, cast) then
+            gather = nil
         end
     elseif event == "UNIT_SPELLCAST_START" then
         local started = CraftStarted(spell)
@@ -384,6 +478,8 @@ function Scan.Init()
             if pending and not pending.loot then
                 LootOpened(pending)
                 ResolveDisenchant()
+            elseif gather then
+                GatherLoot()
             end
         elseif event == "BAG_UPDATE_DELAYED" then
             if PendingDisenchant() then

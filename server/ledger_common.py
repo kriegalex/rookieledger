@@ -10,6 +10,8 @@ A record is one WoW account's observations, named by an 8-hex id (no character n
   c[recipe] = [profession, lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3]   skill range seen per colour (0 orange .. 3 grey)
   s["recipe:skill:colour"] = [crafts, skill-ups]
   d[item] = {l: item level, q: quality, k: class (2 weapon, 4 armor), n: disenchants, m: {material: [quantity, times]}}
+  g[node] = {k: kind (1 mining, 2 herbalism), n: gathers, m: {material: [quantity, times]},
+             p: {"map:x:y": gathers there}}   node: the game's id of the vein or herb; x, y in thousandths of the map
 An upload carries the uploader's own record and the ones it received from guild members in game. `data/ledger.sqlite`
 keeps one row per (record id, uploader) and `current_records` picks one per id: the author's own upload when there is
 one, else the highest change counter. Counts are never added across uploads, so sending a file twice changes nothing.
@@ -28,6 +30,8 @@ MAX_COUNT = 1_000_000
 MAX_PEERS = 300
 MAX_ENTRIES = 50_000        # per record; what is beyond is left out, not refused (see check_record)
 MAX_REV = 10**9             # as Record.MAX_REV in the addon
+MAX_MAP = 100_000
+MAX_PLACES = 2000           # per kind of node, as in Record.lua
 MAX_DEPTH = 8
 MAX_VALUES = 1_000_000      # per file: the game spends 9 bytes or more on a value, so the 8 MiB an upload may hold stay
                             # under it, while 8 MiB of "0," would otherwise become 4 million table entries in memory
@@ -177,19 +181,21 @@ def _array(value, length):
 def check_record(raw):
     """The record as JSON-ready data, or LedgerError. Mirrors Record.Parse in the addon. A record only grows, so one
     with more than MAX_ENTRIES entries is not refused (its author could never upload again): colours, then
-    disenchants, then crafts are kept up to that number and "skipped" says how many entries were left out."""
+    disenchants, gathered nodes and crafts are kept up to that number, of each node MAX_PLACES places, and "skipped"
+    says how many entries were left out."""
     if not isinstance(raw, dict):
         raise LedgerError("record is not a table")
     colours, crafts, disenchants = raw.get("c") or {}, raw.get("s") or {}, raw.get("d") or {}
-    if not all(isinstance(t, dict) for t in (colours, crafts, disenchants)):
+    gathered = raw.get("g") or {}
+    if not all(isinstance(t, dict) for t in (colours, crafts, disenchants, gathered)):
         raise LedgerError("record sections are not tables")
-    skipped = max(0, len(colours) + len(crafts) + len(disenchants) - MAX_ENTRIES)
+    skipped = max(0, len(colours) + len(crafts) + len(disenchants) + len(gathered) - MAX_ENTRIES)
     if skipped:
         keep = iter(range(MAX_ENTRIES))
-        colours, disenchants, crafts = ({key: section[key] for key, _ in zip(section, keep)}
-                                        for section in (colours, disenchants, crafts))
+        colours, disenchants, gathered, crafts = ({key: section[key] for key, _ in zip(section, keep)}
+                                                  for section in (colours, disenchants, gathered, crafts))
     rec = {"rev": _int(raw.get("rev", 0), 0, MAX_REV), "t": _int(raw.get("t", 0), 0, 2**32 - 1),
-           "b": _int(raw.get("b", 0), 0, 10**9), "c": {}, "s": {}, "d": {}}
+           "b": _int(raw.get("b", 0), 0, 10**9), "c": {}, "s": {}, "d": {}, "g": {}}
     if skipped:
         rec["skipped"] = skipped
     for recipe, entry in colours.items():
@@ -222,6 +228,27 @@ def check_record(raw):
             materials[str(material)] = [quantity, times]
         rec["d"][str(_int(item, 1, MAX_ID))] = {"l": _int(entry.get("l"), 1, 1000), "q": _int(entry.get("q"), 2, 4),
                                                  "k": entry["k"], "n": n, "m": materials}
+    for node, entry in gathered.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("m") or {}, dict) \
+                or not isinstance(entry.get("p") or {}, dict):
+            raise LedgerError("bad gathering entry")
+        n = _int(entry.get("n"), 1, MAX_COUNT)
+        materials, places = {}, {}
+        for material, pair in (entry.get("m") or {}).items():
+            quantity, times = _array(pair, 2)
+            _int(material, 1, MAX_ID), _int(times, 1, n), _int(quantity, times, times * 20)
+            materials[str(material)] = [quantity, times]
+        for place, times in (entry.get("p") or {}).items():
+            m = re.fullmatch(r"(\d{1,6}):(\d{1,4}):(\d{1,4})", place) if isinstance(place, str) else None
+            if not m:
+                raise LedgerError("bad gathering place")
+            where = (_int(int(m.group(1)), 1, MAX_MAP), _int(int(m.group(2)), 0, 1000), _int(int(m.group(3)), 0, 1000))
+            _int(times, 1, n)
+            if len(places) < MAX_PLACES:
+                places["%d:%d:%d" % where] = times
+            else:
+                rec["skipped"] = rec.get("skipped", 0) + 1
+        rec["g"][str(_int(node, 1, MAX_ID))] = {"k": _int(entry.get("k"), 1, 2), "n": n, "m": materials, "p": places}
     return rec
 
 
@@ -409,3 +436,23 @@ def disenchant_yields(records):
                 a["m"][int(material)] = (q + quantity, t + times)
     return {key: {"n": a["n"], "materials": {m: (q / a["n"], t / a["n"]) for m, (q, t) in a["m"].items()}}
             for key, a in acc.items()}
+
+
+def gather_yields(records):
+    """{node: {"kind": 1 mining | 2 herbalism, "n": gathers, "materials": {material: (average quantity per gather,
+    share of gathers that gave it)}, "places": {(map, x, y): gathers there}}} summed over every record. x and y are
+    thousandths of the map; two members who stood a step apart at one vein show as two places close together."""
+    acc = {}
+    for rec in records.values():
+        for node, entry in rec.get("g", {}).items():
+            a = acc.setdefault(int(node), {"kind": entry["k"], "n": 0, "m": {}, "places": {}})
+            a["n"] += entry["n"]
+            for material, (quantity, times) in entry["m"].items():
+                q, t = a["m"].get(int(material), (0, 0))
+                a["m"][int(material)] = (q + quantity, t + times)
+            for place, times in entry["p"].items():
+                where = tuple(int(part) for part in place.split(":"))
+                a["places"][where] = a["places"].get(where, 0) + times
+    return {node: {"kind": a["kind"], "n": a["n"], "places": a["places"],
+                   "materials": {m: (q / a["n"], t / a["n"]) for m, (q, t) in a["m"].items()}}
+            for node, a in acc.items()}
