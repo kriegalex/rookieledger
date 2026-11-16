@@ -4,7 +4,7 @@
 The addon writes `RookieLedgerDB` to `WTF/Account/<account>/SavedVariables/RookieLedger.lua`; the companion app
 (companion/) uploads that file as it is. Nothing in it is ever executed: `parse_saved_variables` reads the Lua table
 literal the game writes (strings, numbers, booleans, nested tables) and refuses anything else, and `check_db` keeps only
-records whose every field is a whole number inside the bounds the addon itself applies (Record.lua).
+a record whose every field is a whole number inside bounds.
 
 A record is one WoW account's observations, named by an 8-hex id (no character name):
   c[recipe] = [profession, lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3]   skill range seen per colour (0 orange .. 3 grey)
@@ -12,11 +12,12 @@ A record is one WoW account's observations, named by an 8-hex id (no character n
   d[item] = {l: item level, q: quality, k: class (2 weapon, 4 armor), n: disenchants, m: {material: [quantity, times]}}
   g[node] = {k: kind (1 mining, 2 herbalism), n: gathers, m: {material: [quantity, times]},
              p: {"map:x:y": gathers there}}   node: the game's id of the vein or herb; x, y in thousandths of the map
-An upload carries the uploader's own record and the ones it received from guild members in game. `data/ledger.sqlite`
-keeps one row per (record id, uploader) and `current_records` picks one per id: the author's own upload when there is
-one, else the highest change counter. Counts are never added across uploads, so sending a file twice changes nothing.
-A token is tied to the record id of its first upload: it cannot upload another id as its own, and no other token can
-upload that id as its own (`unbind_token` lifts the tie, for a member who starts over with a new saved file).
+  m[creature] = {n: corpses looted, cn: those whose coin is known, c: their coin in copper,
+                 i: {item: [quantity, corpses that held it]}}
+An upload carries the uploader's own record and nothing else. `data/ledger.sqlite` keeps one row per record id and
+`current_records` returns the rows of tokens that are still valid. Counts are never added across uploads, so sending
+a file twice changes nothing. A token is tied to the record id of its first upload: it cannot upload another id, and
+no other token can upload that id (`unbind_token` lifts the tie, for a member who starts over with a new saved file).
 """
 import hashlib, json, re, sqlite3, time
 from pathlib import Path
@@ -27,11 +28,12 @@ DB_PATH = ROOT / "data" / "ledger.sqlite"
 MAX_ID = 9_999_999
 MAX_SKILL = 600
 MAX_COUNT = 1_000_000
-MAX_PEERS = 300
 MAX_ENTRIES = 50_000        # per record; what is beyond is left out, not refused (see check_record)
 MAX_REV = 10**9             # as Record.MAX_REV in the addon
 MAX_MAP = 100_000
 MAX_PLACES = 2000           # per kind of node, as in Record.lua
+MAX_ITEMS = 5000            # per kind of creature, as in Record.lua
+MAX_COPPER = 10**7          # per corpse: 1000 gold, far above anything a corpse holds
 MAX_DEPTH = 8
 MAX_VALUES = 1_000_000      # per file: the game spends 9 bytes or more on a value, so the 8 MiB an upload may hold stay
                             # under it, while 8 MiB of "0," would otherwise become 4 million table entries in memory
@@ -179,23 +181,24 @@ def _array(value, length):
 
 
 def check_record(raw):
-    """The record as JSON-ready data, or LedgerError. Mirrors Record.Parse in the addon. A record only grows, so one
-    with more than MAX_ENTRIES entries is not refused (its author could never upload again): colours, then
-    disenchants, gathered nodes and crafts are kept up to that number, of each node MAX_PLACES places, and "skipped"
-    says how many entries were left out."""
+    """The record as JSON-ready data, or LedgerError. A record only grows, so one with more than MAX_ENTRIES entries
+    is not refused (its author could never upload again): colours, then disenchants, gathered nodes, crafts and
+    creatures are kept up to that number, of each node MAX_PLACES places, of each creature MAX_ITEMS items, and
+    "skipped" says how many entries were left out."""
     if not isinstance(raw, dict):
         raise LedgerError("record is not a table")
     colours, crafts, disenchants = raw.get("c") or {}, raw.get("s") or {}, raw.get("d") or {}
-    gathered = raw.get("g") or {}
-    if not all(isinstance(t, dict) for t in (colours, crafts, disenchants, gathered)):
+    gathered, creatures = raw.get("g") or {}, raw.get("m") or {}
+    if not all(isinstance(t, dict) for t in (colours, crafts, disenchants, gathered, creatures)):
         raise LedgerError("record sections are not tables")
-    skipped = max(0, len(colours) + len(crafts) + len(disenchants) + len(gathered) - MAX_ENTRIES)
+    skipped = max(0, len(colours) + len(crafts) + len(disenchants) + len(gathered) + len(creatures) - MAX_ENTRIES)
     if skipped:
         keep = iter(range(MAX_ENTRIES))
-        colours, disenchants, gathered, crafts = ({key: section[key] for key, _ in zip(section, keep)}
-                                                  for section in (colours, disenchants, gathered, crafts))
+        colours, disenchants, gathered, crafts, creatures = (
+            {key: section[key] for key, _ in zip(section, keep)}
+            for section in (colours, disenchants, gathered, crafts, creatures))
     rec = {"rev": _int(raw.get("rev", 0), 0, MAX_REV), "t": _int(raw.get("t", 0), 0, 2**32 - 1),
-           "b": _int(raw.get("b", 0), 0, 10**9), "c": {}, "s": {}, "d": {}, "g": {}}
+           "b": _int(raw.get("b", 0), 0, 10**9), "c": {}, "s": {}, "d": {}, "g": {}, "m": {}}
     if skipped:
         rec["skipped"] = skipped
     for recipe, entry in colours.items():
@@ -249,30 +252,34 @@ def check_record(raw):
             else:
                 rec["skipped"] = rec.get("skipped", 0) + 1
         rec["g"][str(_int(node, 1, MAX_ID))] = {"k": _int(entry.get("k"), 1, 2), "n": n, "m": materials, "p": places}
+    for creature, entry in creatures.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("i") or {}, dict):
+            raise LedgerError("bad creature entry")
+        n = _int(entry.get("n"), 1, MAX_COUNT)
+        known = _int(entry.get("cn", 0), 0, n)
+        items = {}
+        for item, pair in (entry.get("i") or {}).items():
+            quantity, times = _array(pair, 2)
+            _int(item, 1, MAX_ID), _int(times, 1, n), _int(quantity, times, times * 1000)
+            if len(items) < MAX_ITEMS:
+                items[str(item)] = [quantity, times]
+            else:
+                rec["skipped"] = rec.get("skipped", 0) + 1
+        rec["m"][str(_int(creature, 1, MAX_ID))] = {"n": n, "cn": known, "c": _int(entry.get("c", 0), 0, known * MAX_COPPER),
+                                                     "i": items}
     return rec
 
 
 def check_db(saved):
-    """(id, own record, {peer id: record}) from a parsed saved-variables file. A peer that fails the checks is left
-    out (it came from someone else's client); a bad own record refuses the upload."""
+    """(id, own record) from a parsed saved-variables file, or LedgerError. Anything else in the file is ignored,
+    the records of other members that versions with guild sync kept there included."""
     db = saved.get("RookieLedgerDB")
     if not isinstance(db, dict) or db.get("v") != 1:
         raise LedgerError("no RookieLedgerDB of format 1")
     origin = db.get("id")
     if not isinstance(origin, str) or not ID_RE.fullmatch(origin):
         raise LedgerError("bad record id")
-    own = check_record(db.get("own"))
-    peers = {}
-    raw_peers = db.get("peers") or {}
-    if not isinstance(raw_peers, dict) or len(raw_peers) > MAX_PEERS:
-        raise LedgerError("bad peers table")
-    for peer, raw in raw_peers.items():
-        if isinstance(peer, str) and ID_RE.fullmatch(peer) and peer != origin:
-            try:
-                peers[peer] = check_record(raw)
-            except LedgerError:
-                pass
-    return origin, own, peers
+    return origin, check_record(db.get("own"))
 
 
 def file_token(text):
@@ -304,7 +311,7 @@ def connect(path=DB_PATH):
         CREATE TABLE IF NOT EXISTS ledger_records (
             origin TEXT NOT NULL,          -- the record's 8-hex id
             uploader TEXT NOT NULL,        -- token_hash of who sent it
-            own INTEGER NOT NULL,          -- 1 when the uploader is the record's author
+            own INTEGER NOT NULL,          -- always 1 now; 0 marked a copy relayed for another member
             rev INTEGER NOT NULL,
             build INTEGER NOT NULL,
             changed_at INTEGER NOT NULL,   -- the record's own clock (epoch seconds)
@@ -349,10 +356,10 @@ def active_hashes(con):
     return {row[0] for row in con.execute("SELECT token_hash FROM ledger_tokens WHERE revoked_at IS NULL")}
 
 
-def store_upload(con, uploader, origin, own, peers):
-    """Keeps each record unless this uploader already sent the same or a newer one. Returns how many rows changed.
-    LedgerConflict when the upload's own record id belongs to another token or is not the one this token is tied to:
-    the id is no secret (guild sync shows it), so without the tie any member could overwrite any other's record."""
+def store_upload(con, uploader, origin, own):
+    """Keeps the record unless this uploader already sent the same or a newer one. Returns how many rows changed.
+    LedgerConflict when the record id belongs to another token or is not the one this token is tied to: without
+    the tie a member could overwrite another's record."""
     bound = con.execute("SELECT origin FROM ledger_tokens WHERE token_hash = ?", (uploader,)).fetchone()
     if bound and bound[0] and bound[0] != origin:
         raise LedgerConflict(f"this token uploads record {bound[0]}, not {origin}")
@@ -360,30 +367,25 @@ def store_upload(con, uploader, origin, own, peers):
                    (origin, uploader)).fetchone():
         raise LedgerConflict(f"record {origin} belongs to another token")
     stamp, changed = now_iso(), 0
-    for rec_id, rec, is_own in [(origin, own, 1)] + [(peer, rec, 0) for peer, rec in peers.items()]:
-        if rec["rev"] < 1:
-            continue
-        row = con.execute("SELECT rev FROM ledger_records WHERE origin = ? AND uploader = ?", (rec_id, uploader)).fetchone()
-        if row and row[0] >= rec["rev"]:
-            continue
-        con.execute("INSERT OR REPLACE INTO ledger_records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (rec_id, uploader, is_own, rec["rev"], rec["b"], rec["t"], stamp, json.dumps(rec, separators=(",", ":"))))
-        changed += 1
+    row = con.execute("SELECT rev FROM ledger_records WHERE origin = ? AND uploader = ?", (origin, uploader)).fetchone()
+    if own["rev"] >= 1 and not (row and row[0] >= own["rev"]):
+        con.execute("INSERT OR REPLACE INTO ledger_records VALUES (?, ?, 1, ?, ?, ?, ?, ?)",
+                    (origin, uploader, own["rev"], own["b"], own["t"], stamp, json.dumps(own, separators=(",", ":"))))
+        changed = 1
     con.execute("UPDATE ledger_tokens SET last_upload = ?, origin = ? WHERE token_hash = ?", (stamp, origin, uploader))
     con.commit()
     return changed
 
 
 def current_records(con):
-    """{record id: record}: one per account, from uploaders whose token is still valid. The author's own upload wins
-    over a copy relayed by someone else; among copies the highest change counter wins."""
+    """{record id: record}: what each author uploaded, for tokens that are still valid. Rows of copies that members
+    relayed for others (kept by versions with guild sync, own = 0) are not read."""
     out, best = {}, {}
-    for origin, own, rev, body in con.execute(
-            "SELECT r.origin, r.own, r.rev, r.body FROM ledger_records r JOIN ledger_tokens t ON t.token_hash = r.uploader "
-            "WHERE t.revoked_at IS NULL"):
-        rank = (own, rev)
-        if origin not in best or rank > best[origin]:
-            best[origin], out[origin] = rank, json.loads(body)
+    for origin, rev, body in con.execute(
+            "SELECT r.origin, r.rev, r.body FROM ledger_records r JOIN ledger_tokens t ON t.token_hash = r.uploader "
+            "WHERE t.revoked_at IS NULL AND r.own = 1"):
+        if origin not in best or rev > best[origin]:
+            best[origin], out[origin] = rev, json.loads(body)
     return out
 
 
@@ -428,7 +430,7 @@ def disenchant_yields(records):
     share of disenchants that gave it)}}} summed over every record."""
     acc = {}
     for rec in records.values():
-        for entry in rec["d"].values():
+        for entry in rec.get("d", {}).values():
             a = acc.setdefault((entry["q"], entry["k"], entry["l"]), {"n": 0, "m": {}})
             a["n"] += entry["n"]
             for material, (quantity, times) in entry["m"].items():
@@ -456,3 +458,23 @@ def gather_yields(records):
     return {node: {"kind": a["kind"], "n": a["n"], "places": a["places"],
                    "materials": {m: (q / a["n"], t / a["n"]) for m, (q, t) in a["m"].items()}}
             for node, a in acc.items()}
+
+
+def drop_rates(records):
+    """{creature: {"n": corpses looted, "coin": average copper per corpse whose coin is known (None when none is),
+    "items": {item: (average quantity per corpse, share of corpses that held it)}}} summed over every record. Only
+    corpses looted alone are in the records, and a corpse that held nothing never opens a loot window, so "per
+    corpse" means per corpse that had something to loot."""
+    acc = {}
+    for rec in records.values():
+        for creature, entry in rec.get("m", {}).items():
+            a = acc.setdefault(int(creature), {"n": 0, "cn": 0, "c": 0, "i": {}})
+            a["n"] += entry["n"]
+            a["cn"] += entry["cn"]
+            a["c"] += entry["c"]
+            for item, (quantity, times) in entry["i"].items():
+                q, t = a["i"].get(int(item), (0, 0))
+                a["i"][int(item)] = (q + quantity, t + times)
+    return {creature: {"n": a["n"], "coin": a["c"] / a["cn"] if a["cn"] else None,
+                       "items": {item: (q / a["n"], t / a["n"]) for item, (q, t) in a["i"].items()}}
+            for creature, a in acc.items()}

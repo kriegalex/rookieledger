@@ -3,12 +3,12 @@
 -- RookieLedgerDB (one per WoW account) holds:
 --   token   32 hex digits, made here once. The companion app reads it from the saved file and sends it with every
 --           upload; the site accepts uploads only for tokens its owner has registered. It never goes out in game.
---   id      8 hex digits naming this account's record in guild sync and on the site. Not a character name.
---   own     this account's record (see Record.lua), peers[id] the records received from guild members.
+--   id      8 hex digits naming this account's record on the site. Not a character name.
+--   own     this account's record (see Record.lua).
+-- The addon sends nothing, in game or out of it: the game writes this table to a file at logout.
 local ADDON, ns = ...
 
 ns.ADDON = ADDON
-ns.PREFIX = "RookieLedger"
 ns.FORMAT = 1
 
 local issecretvalue = issecretvalue or function() return false end
@@ -39,25 +39,21 @@ end
 
 local TEXTS = {
     enUS = {
-        loaded = "recording recipe colours, skill-ups, disenchants and what veins and herbs give, and where. /ledger for details.",
+        loaded = "recording recipe colours, skill-ups, disenchants, gathering and monster loot. /ledger for details.",
         first = "to add your data to the guild site, give your token to the guild's ledger keeper: /ledger token",
-        status = "%d recipes with a colour, %d crafts, %d disenchants, %d veins and herbs gathered; %d guild records received; guild sync %s.",
-        on = "on", off = "off",
+        status = "%d recipes with a colour, %d crafts, %d disenchants, %d veins and herbs gathered, %d corpses looted.",
         token = "Your token (Ctrl+C to copy). Give it to the guild's ledger keeper, to nobody else:",
         tokenChat = "token: %s",
-        syncOn = "guild sync on.", syncOff = "guild sync off: nothing is sent or received in game.",
-        help = "/ledger (status) | /ledger token | /ledger sync on|off",
+        help = "/ledger (status) | /ledger token",
         skipped = "a skill bonus is active (racial or item): colours are not recorded for this profession while it lasts.",
     },
     frFR = {
-        loaded = "note la couleur des recettes, les points de compétence, les désenchantements et ce que donnent filons et plantes, et où. /ledger pour le détail.",
+        loaded = "note la couleur des recettes, les points de compétence, les désenchantements, la récolte et le butin des monstres. /ledger pour le détail.",
         first = "pour ajouter vos données au site de la guilde, donner votre jeton au responsable du registre : /ledger token",
-        status = "%d recettes avec une couleur, %d fabrications, %d désenchantements, %d filons et plantes récoltés ; %d registres de guilde reçus ; synchronisation de guilde %s.",
-        on = "activée", off = "désactivée",
+        status = "%d recettes avec une couleur, %d fabrications, %d désenchantements, %d filons et plantes récoltés, %d cadavres fouillés.",
         token = "Votre jeton (Ctrl+C pour copier). À donner au responsable du registre de la guilde, à personne d'autre :",
         tokenChat = "jeton : %s",
-        syncOn = "synchronisation de guilde activée.", syncOff = "synchronisation de guilde désactivée : rien n'est envoyé ni reçu en jeu.",
-        help = "/ledger (état) | /ledger token | /ledger sync on|off",
+        help = "/ledger (état) | /ledger token",
         skipped = "un bonus de compétence est actif (racial ou objet) : les couleurs ne sont pas notées pour ce métier tant qu'il dure.",
     },
 }
@@ -107,14 +103,11 @@ local function InitDB()
     if type(db.id) ~= "string" or not db.id:match("^%x+$") or #db.id ~= 8 then
         db.id = RandomHex(2, "id")
     end
-    if db.sync == nil then
-        db.sync = true
-    end
     if type(db.own) ~= "table" then
         db.own = ns.Record.New()
     end
     local own = db.own
-    for _, section in ipairs({ "c", "s", "d", "g" }) do
+    for _, section in ipairs({ "c", "s", "d", "g", "m" }) do
         if type(own[section]) ~= "table" then
             own[section] = {}
         end
@@ -124,28 +117,18 @@ local function InitDB()
             own[counter] = 0
         end
     end
-    if type(own.lr) ~= "table" or type(own.lr0) ~= "number" then
-        own.lr, own.lr0 = {}, own.rev   -- see Record.lua: which lines changed when is known from here on
-    end
-    if type(own.hold) ~= "table" then
-        own.hold = {}
-    end
-    if type(db.peers) ~= "table" then
-        db.peers = {}
-    end
+    -- What versions with guild sync kept: other members' records and the bookkeeping of what was sent.
+    db.peers, db.sync, own.lr, own.lr0, own.hold = nil, nil, nil, nil, nil
     ns.db = db
     return fresh
 end
 
--- Marks our record as changed: the companion app uploads it after the next logout, guild sync announces it.
+-- Marks our record as changed: the companion app uploads it after the next logout.
 function ns.Touch()
     local own = ns.db.own
     own.rev = own.rev + 1
     own.t = time()
     own.b = ns.build
-    if ns.Sync then
-        ns.Sync.OwnChanged()
-    end
 end
 
 -- Commands -------------------------------------------------------------------
@@ -189,7 +172,10 @@ end
 
 local function Status()
     local own = ns.db.own
-    local crafts, disenchants, gathers = 0, 0, 0
+    local crafts, disenchants, gathers, corpses = 0, 0, 0, 0
+    for _, creature in pairs(own.m) do
+        corpses = corpses + creature.n
+    end
     for _, node in pairs(own.g) do
         gathers = gathers + node.n
     end
@@ -199,21 +185,15 @@ local function Status()
     for _, item in pairs(own.d) do
         disenchants = disenchants + item.n
     end
-    ns.Print(ns.L.status, Count(own.c), crafts, disenchants, gathers, Count(ns.db.peers), ns.db.sync and ns.L.on or ns.L.off)
+    ns.Print(ns.L.status, Count(own.c), crafts, disenchants, gathers, corpses)
 end
 
 local function Command(text)
-    local word, arg = (text or ""):lower():match("^%s*(%S*)%s*(%S*)")
+    local word = (text or ""):lower():match("^%s*(%S*)")
     if word == "" then
         Status()
     elseif word == "token" or word == "jeton" then
         ShowToken()
-    elseif word == "sync" and (arg == "on" or arg == "off") then
-        ns.db.sync = arg == "on"
-        ns.Print(ns.db.sync and ns.L.syncOn or ns.L.syncOff)
-        if ns.db.sync then
-            ns.Sync.OwnChanged()
-        end
     else
         ns.Print(ns.L.help)
     end
@@ -237,7 +217,6 @@ frame:SetScript("OnEvent", function(_, event, name)
         SlashCmdList.ROOKIELEDGER = Command
     elseif ns.db then
         ns.Scan.Init()
-        ns.Sync.Init()
         if ns.fresh then
             ns.Print(ns.L.loaded)
             ns.Print(ns.L.first)

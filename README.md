@@ -1,34 +1,31 @@
 # RookieLedger
 
-A World of Warcraft: Forever addon that records what the game shows about your professions, shares it with your
-guild, and (optionally) uploads it to a guild site through a small companion app.
+A World of Warcraft: Forever addon that records what the game shows you while you play, and a small companion app
+that uploads it to your guild's site. The guild then learns together what guides get wrong on Forever:
 
-It answers questions that guides get wrong on Forever:
-
-- at which skill does a recipe turn yellow, green and grey;
-- how often does a yellow or green recipe really give a skill point;
-- what does disenchanting an item of a given quality and item level really give;
-- what does a vein or a herb really give, and where are they found.
+- at which skill a recipe turns yellow, green and grey;
+- how often a yellow or green recipe really gives a skill point;
+- what disenchanting an item of a given quality and item level really gives;
+- what a vein or a herb really gives, and where they are found;
+- what each kind of monster really drops, and how much coin.
 
 ## What is recorded
 
-Only numbers the game client shows you about your own professions:
+Only numbers the game client shows you:
 
 - the colour of each recipe at your current skill, read while your profession window is open;
 - per recipe and colour, how many crafts you made and how many gave a skill point;
 - per disenchanted item: its quality, class and item level, and the materials received;
 - per kind of vein or herb you gathered: how often, the materials received, and the places (map and position on it)
-  where you gathered it.
+  where you gathered it;
+- per kind of monster you looted alone: how many corpses, their coin, and every item they held (quest items left out).
 
-No character name, account name, realm, guild name, chat, gold or inventory is recorded. A record is named by a random
-8-digit id made on first login.
+No character name, account name, realm, guild name, chat, gold total or inventory is recorded, and no time other
+than that of the record's last change. A record is named by a random 8-digit id made on first login. A record only
+grows: a skill range widens, a count goes up.
 
-**Gathering places are positions you stood at, so they are shared an hour late.** What a vein or herb gave is sent to
-the guild within minutes; where you gathered it is held back for an hour after your last gather at that place, and
-is sent without a time. Guild sync therefore never says where you are or just were. With `/ledger sync off` the
-places stay in your own saved file and, if you use the companion app, on the guild site.
-
-A record only grows: a skill range widens, a count goes up. Nothing in it is ever lowered or removed.
+Gathering places are positions you stood at. They are in your saved file and, if you use the companion app, on your
+guild's site, where the guild's ledger keeper can read them.
 
 ## The addon
 
@@ -37,18 +34,12 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 
 | Command | What it does |
 |---|---|
-| `/ledger` | Status: recipes, crafts, disenchants and gathers recorded, guild records received |
+| `/ledger` | Status: recipes, crafts, disenchants, gathers and corpses recorded |
 | `/ledger token` | Shows your upload token, to give to your guild's ledger keeper |
-| `/ledger sync on` or `off` | Turns guild sync on or off |
 
-**Guild sync.** Guild members who run the addon exchange their records on the guild addon channel, which no player
-sees. After a change only the changed lines are sent, the queue stays well under the game's message limit and waits
-during encounters and battlegrounds. Records received in one guild are not passed on in another.
-`/ledger sync off` stops all sending and receiving.
-
-Guild sync cannot prove who wrote a record: a guild member could send a made-up one under another member's id. The
-author's addon notices and sends the real one again, and on the site an author's own upload always wins over a copy
-relayed by someone else.
+**The addon sends nothing**, in game or out of it: no addon messages, no chat, nothing to other players. It writes
+its record to its saved file when you log out, as every addon does. Without the companion app the record never
+leaves your computer.
 
 The addon is free, its code is readable, and it shows no advertising, as Blizzard's add-on policy requires.
 
@@ -84,8 +75,7 @@ block unsigned programs with no bypass.
 - It contacts one address only: the upload site (by default the site of the guild this addon was written for).
 - Until your token is registered, it asks "is this token known?" at most once every 30 minutes and sends nothing else.
 - Once registered, it sends the addon's saved file (`RookieLedger.lua`) when its content has changed, with the token.
-  That file holds the records described above, gathering places included, yours and the ones received from guild
-  members.
+  That file holds the record described above, gathering places included.
 - It reads no other file, sends no telemetry and does not update itself.
 
 The token is the only credential. Give it to the ledger keeper and to nobody else; to stop uploading, run

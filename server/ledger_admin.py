@@ -6,7 +6,7 @@
   python3 -I server/ledger_admin.py unbind <token | who>   let it upload a new record id (a member's saved file was lost)
   python3 -I server/ledger_admin.py list                   registered tokens and when each last uploaded
   python3 -I server/ledger_admin.py summary                what the records say: thresholds, skill-ups, disenchants,
-                                                           gathering yields and how many places each node was found at
+                                                           gathering yields and places, corpses looted per creature
 
 The upload endpoint notices a new or revoked token within 15 seconds; nothing needs restarting.
 """
@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).absolute().parent))
 import ledger_common as lc
 
 COLOURS = ("orange", "yellow", "green", "grey")
+TOP_CREATURES = 20   # the summary lists the most looted ones; lc.drop_rates has them all
 
 
 def summary(con, out=sys.stdout):
@@ -46,6 +47,11 @@ def summary(con, out=sys.stdout):
         parts = ", ".join(f"item {m}: {avg:.2f} each, in {share:.0%}" for m, (avg, share) in sorted(y["materials"].items()))
         print(f"  {'vein' if y['kind'] == 1 else 'herb'} {node}, {y['n']} gathers at {len(y['places'])} places: {parts}",
               file=out)
+    drops = lc.drop_rates(records)
+    print(f"\nmonster loot ({len(drops)} kinds of creature, {sum(d['n'] for d in drops.values())} corpses)", file=out)
+    for creature, d in sorted(drops.items(), key=lambda kv: -kv[1]["n"])[:TOP_CREATURES]:
+        coin = "coin unknown" if d["coin"] is None else f"{d['coin']:.0f} copper each"
+        print(f"  creature {creature}, {d['n']} corpses, {coin}, {len(d['items'])} different items", file=out)
 
 
 def main():

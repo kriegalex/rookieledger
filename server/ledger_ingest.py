@@ -122,18 +122,17 @@ class Handler(BaseHTTPRequestHandler):
                     raise lc.LedgerError("file too large")
             if len(data) > MAX_TEXT:
                 raise lc.LedgerError("file too large")
-            origin, own, peers = lc.check_db(lc.parse_saved_variables(data.decode("utf-8")))
+            origin, own = lc.check_db(lc.parse_saved_variables(data.decode("utf-8")))
         except (lc.LedgerError, zlib.error, UnicodeDecodeError, RecursionError) as error:
             return self.reply(400, {"error": str(error)})
         con = lc.connect(self.server.db_path)
         try:
-            changed = lc.store_upload(con, digest, origin, own, peers)
+            changed = lc.store_upload(con, digest, origin, own)
         except lc.LedgerConflict as error:
             return self.reply(409, {"error": str(error)})
         finally:
             con.close()
-        self.reply(200, {"id": origin, "rev": own["rev"], "peers": len(peers), "stored": changed,
-                         "skipped": own.get("skipped", 0)})
+        self.reply(200, {"id": origin, "rev": own["rev"], "stored": changed, "skipped": own.get("skipped", 0)})
 
     def log_message(self, format, *args):
         # One line per request, without the Authorization header and without the client's address.

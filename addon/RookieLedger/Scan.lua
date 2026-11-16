@@ -6,6 +6,9 @@
 -- Disenchants: the item that left the bags during a Disenchant cast, and what the loot window it opened held.
 -- Gathering: after a Mining or Herb Gathering cast, the vein or herb the loot window names as its source, what it
 --   held, and where on the map the player stood.
+-- Monster loot: for every corpse a loot window names as a source, the kind of monster, the items of every quality
+--   and the coin it held. Only while not in a group (there the window shows one member's share), only what is not
+--   a quest item, and each corpse once.
 --
 -- Nothing is recorded for a profession while its skill carries a bonus (racial, enchant, lure): colours and
 -- skill-ups follow the boosted skill, and mixing the two would blur the thresholds.
@@ -395,7 +398,7 @@ local function LootNode()
     return node
 end
 
--- A loot window opened after a gathering cast.
+-- A loot window opened after a gathering cast. True when it was the vein's or herb's and has been recorded.
 local function GatherLoot()
     local g = gather
     if not g or GetTime() - g.t > GATHER_TIMEOUT then
@@ -410,9 +413,104 @@ local function GatherLoot()
     gather = nil
     Record.Gather(ns.db.own, node, g.kind, loot, Place())
     ns.Touch()
+    return true
+end
+
+-- Monster loot ---------------------------------------------------------------
+
+local MONEY_SLOT = (Enum and Enum.LootSlotType and Enum.LootSlotType.Money) or LOOT_SLOT_MONEY or 2
+local MAX_SEEN = 2000
+local seen, seenOrder = {}, {}   -- corpses already counted this session: a corpse opened again shows what was left
+
+-- The coin a money slot's text names, in copper, read with the client's own "%d Gold" / "%d Silver" / "%d Copper".
+local function Copper(text)
+    if type(text) ~= "string" then
+        return nil
+    end
+    local total, any = 0, false
+    for format, worth in pairs({ [GOLD_AMOUNT or false] = 10000, [SILVER_AMOUNT or false] = 100, [COPPER_AMOUNT or false] = 1 }) do
+        if type(format) == "string" then
+            local pattern = format:gsub("([%^%$%(%)%.%[%]%*%+%-%?])", "%%%1"):gsub("%%d", "(%%d+)")
+            local amount = tonumber((text:match(pattern)))
+            if amount then
+                total, any = total + amount * worth, true
+            end
+        end
+    end
+    return any and total or nil
+end
+
+-- A loot window that is neither a disenchant's nor a gather's: corpses, if every source it names is one.
+local function CorpseLoot()
+    if ns.Try(IsInGroup) == true or type(GetLootSourceInfo) ~= "function" then
+        return
+    end
+    local corpses, order = {}, {}   -- [guid] = { creature, items = {}, copper }
+    local windowCopper, shares = nil, nil
+    for slot = 1, ns.Try(GetNumLootItems) or 0 do
+        local sources = { ns.Try(GetLootSourceInfo, slot) }
+        local _, name, quantity, _, _, _, quest = ns.Try(GetLootSlotInfo, slot)
+        local item = ItemID(ns.Plain(ns.Try(GetLootSlotLink, slot)))
+        local money = not item and ns.Plain(ns.Try(GetLootSlotType, slot)) == MONEY_SLOT
+        if money then
+            windowCopper, shares = Copper(ns.Plain(name)), {}
+        end
+        for j = 1, #sources, 2 do
+            local guid, amount = ns.Plain(sources[j]), ns.Plain(sources[j + 1])
+            local creature = type(guid) == "string" and tonumber(guid:match("^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
+            if not creature then
+                return   -- a chest, an item, or a source the client keeps to itself: not ours to count
+            end
+            local corpse = corpses[guid]
+            if not corpse then
+                corpse = { creature = creature, items = {} }
+                corpses[guid] = corpse
+                order[#order + 1] = guid
+            end
+            if type(amount) ~= "number" or amount < 1 then
+                amount = type(ns.Plain(quantity)) == "number" and ns.Plain(quantity) or 1
+            end
+            if money then
+                shares[guid] = amount
+            elseif item and not ns.Plain(quest) then
+                corpse.items[item] = (corpse.items[item] or 0) + amount
+            end
+        end
+    end
+    -- Coin: the window's text gives the total. With one corpse it is that corpse's; with several, the shares the
+    -- client names per corpse are taken only if they add up to that total, else the coin of these corpses is unknown.
+    local shareTotal = 0
+    for _, amount in pairs(shares or {}) do
+        shareTotal = shareTotal + amount
+    end
+    local changed = false
+    for _, guid in ipairs(order) do
+        if not seen[guid] then
+            seen[guid] = true
+            seenOrder[#seenOrder + 1] = guid
+            if #seenOrder > MAX_SEEN then
+                seen[table.remove(seenOrder, 1)] = nil
+            end
+            local copper
+            if not shares then
+                copper = 0
+            elseif windowCopper and #order == 1 then
+                copper = windowCopper
+            elseif windowCopper and shareTotal == windowCopper then
+                copper = shares[guid] or 0
+            end
+            Record.Corpse(ns.db.own, corpses[guid].creature, copper, corpses[guid].items)
+            changed = true
+        end
+    end
+    if changed then
+        ns.Touch()
+    end
 end
 
 -- Events ---------------------------------------------------------------------
+
+local lootRead = false   -- the open loot window has been read: the game may announce one window twice
 
 local function OnSpellcast(event, unit, cast, spell)
     spell, cast = ns.Plain(spell), ns.Plain(cast)
@@ -461,7 +559,7 @@ function Scan.Init()
     for _, event in ipairs({
         "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED", "SKILL_LINES_CHANGED",
         "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_FAILED_QUIET",
-        "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY", "BAG_UPDATE_DELAYED",
+        "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY", "LOOT_CLOSED", "BAG_UPDATE_DELAYED",
     }) do
         if event:sub(1, 14) == "UNIT_SPELLCAST" and frame.RegisterUnitEvent then
             -- Our own casts only: unfiltered, the game sends those of every unit in sight.
@@ -473,13 +571,18 @@ function Scan.Init()
     frame:SetScript("OnEvent", function(_, event, ...)
         if event:sub(1, 14) == "UNIT_SPELLCAST" then
             OnSpellcast(event, ...)
+        elseif event == "LOOT_CLOSED" then
+            lootRead = false
         elseif event == "LOOT_READY" then
             local pending = PendingDisenchant()
             if pending and not pending.loot then
                 LootOpened(pending)
                 ResolveDisenchant()
-            elseif gather then
-                GatherLoot()
+            elseif gather and GatherLoot() then
+                lootRead = true
+            elseif not lootRead and not pending then
+                lootRead = true
+                CorpseLoot()
             end
         elseif event == "BAG_UPDATE_DELAYED" then
             if PendingDisenchant() then

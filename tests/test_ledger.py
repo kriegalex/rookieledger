@@ -73,6 +73,23 @@ RookieLedgerDB = {
 },
 },
 },
+["m"] = {
+[299] = {
+["n"] = 4,
+["cn"] = 2,
+["c"] = 370,
+["i"] = {
+[2589] = {
+5, -- [1]
+3, -- [2]
+},
+[771] = {
+1, -- [1]
+1, -- [2]
+},
+},
+},
+},
 },
 ["peers"] = {
 ["aaaaaaaa"] = {
@@ -133,17 +150,17 @@ class Parser(unittest.TestCase):
 
 
 class Checks(unittest.TestCase):
-    def test_own_record_and_peers(self):
-        origin, own, peers = lc.check_db(lc.parse_saved_variables(SAVED))
+    def test_own_record(self):
+        origin, own = lc.check_db(lc.parse_saved_variables(SAVED))
         self.assertEqual(origin, "0876cf1e")
         self.assertEqual(own["c"]["7421"], [333, 125, 126, 0, 0, 0, 0, 0, 0])
         self.assertEqual(own["s"], {"7421:125:0": [3, 3]})
         self.assertEqual(own["d"]["2584"], {"l": 16, "q": 2, "k": 4, "n": 2, "m": {"10940": [4, 2]}})
         self.assertEqual(own["g"]["1731"], {"k": 1, "n": 4, "m": {"2770": [9, 4], "2835": [1, 1]},
                                             "p": {"1429:432:654": 3, "1429:600:200": 1}})
-        self.assertEqual(peers["aaaaaaaa"]["g"], {}, "a record from before gathering was recorded")
-        self.assertEqual(list(peers), ["aaaaaaaa"], "a peer that fails the checks is left out")
-        self.assertNotIn("token", json.dumps([own, peers]))
+        self.assertEqual(own["m"]["299"], {"n": 4, "cn": 2, "c": 370, "i": {"2589": [5, 3], "771": [1, 1]}})
+        self.assertNotIn("token", json.dumps(own))
+        self.assertNotIn("aaaaaaaa", json.dumps(own), "records of other members in the file are not read")
 
     def test_refuses_a_bad_own_record(self):
         for old, new in (("125, -- [2]", "127, -- [2]"),            # lo above hi
@@ -156,22 +173,20 @@ class Checks(unittest.TestCase):
                          ('["1429:432:654"] = 3', '["Elwynn:432:654"] = 3'),     # a place that is not numbers
                          ('["1429:432:654"] = 3', '["1429:432:654"] = 5'),       # more gathers there than gathers
                          ('["k"] = 1', '["k"] = 3'),                             # neither vein nor herb
+                         ('["cn"] = 2', '["cn"] = 5'),                           # coin known of more corpses than looted
+                         ('["c"] = 370', '["c"] = 99999999'),                    # 5000 gold on a corpse
+                         ("5, -- [1]\n3, -- [2]", "5, -- [1]\n9, -- [2]"),      # an item in 9 of 4 corpses
                          ('["v"] = 1', '["v"] = 2')):
             self.assertIn(old, SAVED)
             with self.assertRaises(lc.LedgerError, msg=new):
                 lc.check_db(lc.parse_saved_variables(SAVED.replace(old, new)))
 
 
-    def test_a_peer_with_named_fields_in_a_list_is_left_out(self):
-        mixed = SAVED.replace('[7421] = "os.exit()",', '[7421] = {\n333, -- [1]\n["x"] = 1,\n},')
-        self.assertNotEqual(mixed, SAVED)
-        self.assertEqual(list(lc.check_db(lc.parse_saved_variables(mixed))[2]), ["aaaaaaaa"])
-
-
 class Reading(unittest.TestCase):
     def test_thresholds_rates_and_yields(self):
-        _, own, peers = lc.check_db(lc.parse_saved_variables(SAVED))
-        records = {"0876cf1e": own, **peers}
+        _, own = lc.check_db(lc.parse_saved_variables(SAVED))
+        other = {"c": {"7421": [333, 0, 0, 131, 140, 0, 0, 0, 0]}, "s": {}}   # a record of an older version
+        records = {"0876cf1e": own, "aaaaaaaa": other}
         t = lc.colour_thresholds(records)[7421]
         self.assertEqual(t["ranges"], [(125, 126), (131, 140), None, None])
         self.assertEqual(t["yellow"], (126, 131), "yellow starts above 126 and by 131")
@@ -182,6 +197,8 @@ class Reading(unittest.TestCase):
         self.assertEqual(lc.gather_yields(records), {1731: {
             "kind": 1, "n": 4, "materials": {2770: (2.25, 1.0), 2835: (0.25, 0.25)},
             "places": {(1429, 432, 654): 3, (1429, 600, 200): 1}}})
+        self.assertEqual(lc.drop_rates(records), {299: {
+            "n": 4, "coin": 185.0, "items": {2589: (1.25, 0.75), 771: (0.25, 0.25)}}})
 
     def test_overlapping_colours_are_a_conflict(self):
         records = {"a": {"c": {"1": [333, 100, 130, 125, 140, 0, 0, 0, 0]}, "s": {}, "d": {}}}
@@ -249,34 +266,34 @@ class Endpoint(unittest.TestCase):
         self.assertEqual(self.call("status")[0], 204)
         status, body = self.call("upload", body=gzip.compress(SAVED.encode()), headers={"Content-Encoding": "gzip"})
         self.assertEqual((status, json.loads(body)),
-                         (200, {"id": "0876cf1e", "rev": 7, "peers": 1, "stored": 2, "skipped": 0}))
+                         (200, {"id": "0876cf1e", "rev": 7, "stored": 1, "skipped": 0}))
         status, body = self.call("upload", body=SAVED.encode())
         self.assertEqual(json.loads(body)["stored"], 0, "the same file again changes nothing")
         con = lc.connect(self.db)
-        self.assertEqual(sorted(lc.current_records(con)), ["0876cf1e", "aaaaaaaa"])
+        self.assertEqual(sorted(lc.current_records(con)), ["0876cf1e"])
         self.assertNotIn(TOKEN, " ".join(map(str, con.execute("SELECT * FROM ledger_tokens").fetchall()
                                              + con.execute("SELECT * FROM ledger_records").fetchall())))
         out = io.StringIO()
         ledger_admin.summary(con, out)
-        self.assertIn("recipe 7421: orange 125-126 yellow 131-140  yellow>126,<=131", out.getvalue())
+        self.assertIn("recipe 7421: orange 125-126", out.getvalue())
         self.assertIn("recipe 7421 orange: 3/3 = 100%", out.getvalue())
         self.assertIn("item 10940: 2.00 each, in 100%", out.getvalue())
         self.assertIn("vein 1731, 4 gathers at 2 places: item 2770: 2.25 each, in 100%, item 2835: 0.25 each, in 25%",
                       out.getvalue())
+        self.assertIn("monster loot (1 kinds of creature, 4 corpses)", out.getvalue())
+        self.assertIn("creature 299, 4 corpses, 185 copper each, 2 different items", out.getvalue())
         con.close()
 
-    def test_own_upload_wins_over_a_relayed_copy(self):
+    def test_a_revoked_token_no_longer_counts(self):
         self.register()
-        self.register(OTHER, "B")
-        # B relays an older copy of A's record with a higher counter; A's own upload still wins.
-        relayed = SAVED.replace('"0876cf1e"', '"cccccccc"').replace('["aaaaaaaa"]', '["0876cf1e"]').replace(
-            '["rev"] = 2', '["rev"] = 99')
-        self.assertEqual(self.call("upload", token=OTHER, body=relayed.encode())[0], 200)
         self.assertEqual(self.call("upload", body=SAVED.encode())[0], 200)
         con = lc.connect(self.db)
-        self.assertEqual(lc.current_records(con)["0876cf1e"]["rev"], 7)
+        # A copy another member relayed, as versions with guild sync stored them, is not read.
+        con.execute("INSERT INTO ledger_records VALUES ('eeeeeeee', ?, 0, 5, 1, 1, 'x', '{}')", (lc.token_hash(TOKEN),))
+        con.commit()
+        self.assertEqual(sorted(lc.current_records(con)), ["0876cf1e"])
         self.assertEqual(lc.revoke_token(con, "A"), 1)
-        self.assertEqual(lc.current_records(con)["0876cf1e"]["rev"], 99, "a revoked uploader's rows no longer count")
+        self.assertEqual(lc.current_records(con), {})
         con.close()
         self.assertEqual(self.call("status")[0], 401)
 
@@ -302,15 +319,15 @@ class Endpoint(unittest.TestCase):
         self.register()
         with mock.patch.object(lc, "MAX_ENTRIES", 2):
             status, body = self.call("upload", body=SAVED.encode())
-        self.assertEqual((status, json.loads(body)["skipped"]), (200, 2))
+        self.assertEqual((status, json.loads(body)["skipped"]), (200, 3))
         con = lc.connect(self.db)
         own = lc.current_records(con)["0876cf1e"]
         con.close()
-        self.assertEqual((len(own["c"]), len(own["d"]), len(own["g"]), len(own["s"])), (1, 1, 0, 0),
+        self.assertEqual((len(own["c"]), len(own["d"]), len(own["g"]), len(own["s"]), len(own["m"])), (1, 1, 0, 0, 0),
                          "colours and disenchants come first")
-        with mock.patch.object(lc, "MAX_PLACES", 1):
+        with mock.patch.object(lc, "MAX_PLACES", 1), mock.patch.object(lc, "MAX_ITEMS", 1):
             cut = lc.check_db(lc.parse_saved_variables(SAVED))[1]
-        self.assertEqual((len(cut["g"]["1731"]["p"]), cut["skipped"]), (1, 1))
+        self.assertEqual((len(cut["g"]["1731"]["p"]), len(cut["m"]["299"]["i"]), cut["skipped"]), (1, 1, 2))
 
     def test_refuses_bad_uploads(self):
         self.register()
@@ -353,18 +370,16 @@ class Addon(unittest.TestCase):
                                   str(ROOT / "addon" / "RookieLedger"), str(out)], capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout[-2000:] + run.stderr)
             self.assertIn("all checks passed", run.stdout)
-            # What the addon saved is what the server accepts, for the author's file and for a peer's.
-            origin, own, peers = lc.check_db(lc.parse_saved_variables(out.read_text()))
+            # What the addon saved is what the server accepts.
+            origin, own = lc.check_db(lc.parse_saved_variables(out.read_text()))
             self.assertEqual(own["c"]["7421"][0], 333)
             self.assertEqual(own["d"]["2584"]["m"], {"10939": [1, 1], "10940": [2, 1]})
             self.assertEqual(own["s"]["7418:125:1"], [1, 1])
-            _, _, relayed = lc.check_db(lc.parse_saved_variables(Path(str(out) + ".peer").read_text()))
-            self.assertEqual(relayed[origin]["c"], own["c"])
-            self.assertEqual(relayed[origin]["s"], own["s"])
-            self.assertEqual(relayed[origin]["d"], own["d"])
             self.assertEqual(own["g"]["1731"]["m"]["2835"], [1, 1])
             self.assertEqual(own["g"]["1731"]["p"]["1429:600:200"], 1)
-            self.assertEqual(relayed[origin]["g"], own["g"])
+            self.assertEqual(own["m"]["299"], {"n": 4, "cn": 4, "c": 370,
+                                               "i": {"2589": [5, 3], "771": [1, 1], "4306": [1, 1]}})
+            self.assertEqual((own["m"]["118"]["n"], own["m"]["118"]["cn"], own["m"]["118"]["c"]), (3, 1, 50))
 
 
 if __name__ == "__main__":
