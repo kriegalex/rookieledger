@@ -1,16 +1,24 @@
 name: Release
 
-# A tag such as v0.2.0 publishes the addon (CurseForge, Wago, GitHub release) and attaches the companion app.
+# A tag such as v0.2.0 publishes the addon (CurseForge, Wago, GitHub release) and attaches the companion app, once
+# the tests of the tagged commit have passed.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
   addon:
+    needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # creates the GitHub release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,6 +32,9 @@ jobs:
   companion:
     needs: addon
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # uploads the binaries to the release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

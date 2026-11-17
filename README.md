@@ -105,10 +105,10 @@ cd companion && go test ./...                  # CI runs these on Linux and on W
 A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/ledger_common.py` (`check_record`)
 and both tests together.
 
-Releases: push a tag such as `v0.2.0`. The workflow packages the addon with the
-[BigWigs packager](https://github.com/BigWigsMods/packager), uploads it to CurseForge and Wago when their tokens are
-set as repository secrets, and attaches the companion binaries to the GitHub release. Update `CHANGELOG.md` first: it
-is the release text.
+Releases: push a tag such as `v0.2.0`. The workflow runs the tests above on the tagged commit and publishes nothing
+if one fails. It then packages the addon with the [BigWigs packager](https://github.com/BigWigsMods/packager),
+uploads it to CurseForge and Wago when their tokens are set as repository secrets, and attaches the companion
+binaries to the GitHub release. Update `CHANGELOG.md` first: it is the release text.
 
 ## Licence
 

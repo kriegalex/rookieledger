@@ -1,6 +1,6 @@
 """RookieLedger: the addon in a simulated game (lua5.1), the saved-variables parser, the checks and the upload endpoint.
 No database of the pipeline is needed; the endpoint runs on a free local port with a temporary database."""
-import gzip, io, json, shutil, socket, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import gzip, io, json, os, shutil, socket, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -361,13 +361,16 @@ class Endpoint(unittest.TestCase):
         self.assertEqual(self.call("upload", body=SAVED.encode())[0], 429)
 
 
-@unittest.skipUnless(shutil.which("lua5.1"), "lua5.1 not installed")
+# Skipped only on a developer's machine without lua5.1: in CI a missing lua5.1 is an error, not a green run without
+# the addon's tests.
+@unittest.skipUnless(shutil.which("lua5.1") or os.environ.get("CI"), "lua5.1 not installed")
 class Addon(unittest.TestCase):
     def test_simulated_game_and_its_saved_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "RookieLedger.lua"
             run = subprocess.run(["lua5.1", str(ROOT / "tests" / "rookieledger_harness.lua"),
-                                  str(ROOT / "addon" / "RookieLedger"), str(out)], capture_output=True, text=True)
+                                  str(ROOT / "addon" / "RookieLedger"), str(out)], capture_output=True, text=True,
+                                 timeout=120)
             self.assertEqual(run.returncode, 0, run.stdout[-2000:] + run.stderr)
             self.assertIn("all checks passed", run.stdout)
             # What the addon saved is what the server accepts.
