@@ -66,18 +66,19 @@ end
 
 -- Adds one loot to a { [item] = { quantity, times } } table. loot: { [item id] = quantity }.
 local function AddLoot(into, loot, limit)
-    local held = 0
-    if limit then
-        for _ in pairs(into) do
-            held = held + 1
-        end
-    end
+    local held   -- the items into holds: counted only when a new one has to fit under limit
     for item, quantity in pairs(loot) do
         local counts = into[item]
+        if not counts and limit and not held then
+            held = 0
+            for _ in pairs(into) do
+                held = held + 1
+            end
+        end
         if not counts and (not limit or held < limit) then
             counts = { 0, 0 }
             into[item] = counts
-            held = held + 1
+            held = limit and held + 1
         end
         if counts then
             counts[1] = counts[1] + quantity

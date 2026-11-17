@@ -8,7 +8,8 @@
 --   held, and where on the map the player stood.
 -- Monster loot: for every corpse a loot window names as a source, the kind of monster, the items of every quality
 --   and the coin it held. Only while not in a group (there the window shows one member's share), only what is not
---   a quest item, and each corpse once.
+--   a quest item, and each corpse once. A window opened by Skinning or Pick Pocket names a creature too, but holds
+--   nothing it dropped: it is not read.
 --
 -- Nothing is recorded for a profession while its skill carries a bonus (racial, enchant, lure): colours and
 -- skill-ups follow the boosted skill, and mixing the two would blur the thresholds.
@@ -34,6 +35,7 @@ local DISENCHANT_TIMEOUT = 10
 local EARLY_LOOT = 0.5      -- a loot window this shortly before the cast's end is taken for its result
 local GATHER = { [2575] = 1, [2366] = 2 }   -- Mining, Herb Gathering: the kind of node (see Record.lua)
 local GATHER_TIMEOUT = 10   -- from the start of the cast to its loot window
+local NOT_A_DROP = { [8613] = "skin", [921] = "pocket" }   -- Skinning, Pick Pocket: loot of a creature that it did not drop
 
 local timers = {}
 
@@ -224,6 +226,27 @@ local function ItemID(link)
     return type(link) == "string" and tonumber(link:match("item:(%d+)")) or nil
 end
 
+-- The kind of thing a GUID names and the game's id of it: "Creature", 118 for
+-- "Creature-0-<server>-<instance>-<zone>-118-<spawn>". Nothing for a GUID of another shape.
+local function GuidKind(guid)
+    if type(guid) ~= "string" then
+        return nil
+    end
+    local kind, id = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+    return kind, tonumber(id)
+end
+
+-- The game's id of the creature a GUID names, or nil. Some monsters are named as vehicles.
+local function CreatureID(guid)
+    local kind, id = GuidKind(guid)
+    return (kind == "Creature" or kind == "Vehicle") and id or nil
+end
+
+-- What a call returned, with n their number: a nil among them does not end the list.
+local function Pack(...)
+    return { n = select("#", ...), ... }
+end
+
 -- [item id] = { count, link } for the green and better items in the bags.
 local function Bags()
     local found = {}
@@ -337,24 +360,56 @@ end
 -- Gathering ------------------------------------------------------------------
 
 local SpellName = (C_Spell and C_Spell.GetSpellName) or GetSpellInfo
-local gatherNames   -- [spell name] = kind: the higher ranks are other spells under the same name
+local NAME_TRIES = 5   -- casts after which a name the client still does not give is done without
+-- [GATHER or NOT_A_DROP] = { names = { [spell name] = value }, tries = casts that asked for the names,
+--   spells = { [spell id] = value, false for a spell that is not one of them } }
+-- The higher ranks are other spells under the same name. Every cast of the player comes through here: a spell is
+-- asked about by name once, then answered from spells.
+local ranks = {}
 
--- 1 for a mining cast, 2 for a herb gathering one, nil for any other spell.
-local function GatherKind(spell)
-    if GATHER[spell] then
-        return GATHER[spell]
+-- What known holds for spell or for another rank of it, nil for any other spell.
+local function ByName(known, spell)
+    if known[spell] then
+        return known[spell]
     end
-    if not gatherNames then
-        gatherNames = {}
-        for id, kind in pairs(GATHER) do
+    local rank = ranks[known]
+    if not rank then
+        rank = { tries = 0 }
+        ranks[known] = rank
+    end
+    local value = rank.spells and rank.spells[spell]
+    if value ~= nil then
+        return value or nil
+    end
+    local names = rank.names
+    if not names then
+        names = {}
+        local all = true
+        for id, kind in pairs(known) do
             local name = ns.Plain((ns.Try(SpellName, id)))
             if type(name) == "string" then
-                gatherNames[name] = kind
+                names[name] = kind
+            else
+                all = false
             end
+        end
+        rank.tries = rank.tries + 1
+        if all or rank.tries >= NAME_TRIES then
+            -- Else asked again at the next cast: the client did not have every name yet.
+            rank.names, rank.spells = names, {}
         end
     end
     local name = ns.Plain((ns.Try(SpellName, spell)))
-    return type(name) == "string" and gatherNames[name] or nil
+    value = type(name) == "string" and names[name] or nil
+    if rank.spells and type(name) == "string" then
+        rank.spells[spell] = value or false
+    end
+    return value
+end
+
+-- 1 for a mining cast, 2 for a herb gathering one, nil for any other spell.
+local function GatherKind(spell)
+    return ByName(GATHER, spell)
 end
 
 local gather   -- the gathering cast under way: { kind, t, cast }
@@ -388,8 +443,8 @@ local function LootNode()
     for slot = 1, ns.Try(GetNumLootItems) or 0 do
         local source = ns.Plain((ns.Try(GetLootSourceInfo, slot)))
         if type(source) == "string" then
-            local id = tonumber(source:match("^GameObject%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
-            if not id or (node and node ~= id) then
+            local kind, id = GuidKind(source)
+            if kind ~= "GameObject" or not id or (node and node ~= id) then
                 return nil
             end
             node = id
@@ -420,24 +475,73 @@ end
 
 local MONEY_SLOT = (Enum and Enum.LootSlotType and Enum.LootSlotType.Money) or LOOT_SLOT_MONEY or 2
 local MAX_SEEN = 2000
-local seen, seenOrder = {}, {}   -- corpses already counted this session: a corpse opened again shows what was left
+-- Corpses already counted this session: a corpse opened again shows what was left. seenOrder holds the last
+-- MAX_SEEN of them as a ring, seenNext being the place of the oldest.
+local seen, seenOrder, seenNext = {}, {}, 1
+-- The last Skinning or Pick Pocket cast: { t, cast, skin, taken }. t is when it was last heard of, skin whether it
+-- is Skinning, taken whether its loot window has opened.
+local taking
+
+-- Notes a corpse as counted. False when it already was.
+local function MarkSeen(guid)
+    if seen[guid] then
+        return false
+    end
+    local oldest = seenOrder[seenNext]
+    if oldest then
+        seen[oldest] = nil
+    end
+    seen[guid] = true
+    seenOrder[seenNext] = guid
+    seenNext = seenNext % MAX_SEEN + 1
+    return true
+end
+
+-- The open window is Skinning's. The corpses it names show nothing they dropped from now on: opened again without
+-- a cast, they hold the hide that was left in the window.
+local function SkinLoot()
+    for slot = 1, ns.Try(GetNumLootItems) or 0 do
+        local sources = Pack(ns.Try(GetLootSourceInfo, slot))
+        for j = 1, sources.n, 2 do
+            local guid = ns.Plain(sources[j])
+            if CreatureID(guid) then
+                MarkSeen(guid)
+            end
+        end
+    end
+end
+
+local coinPatterns = {}   -- [one of the client's formats, "%d Gold"] = the pattern that reads its number
+
+-- Adds to total the coin that text names in format, worth copper apiece, and takes it out of rest.
+local function Coin(text, rest, total, format, worth)
+    if type(format) ~= "string" then
+        return total, rest
+    end
+    local pattern = coinPatterns[format]
+    if not pattern then
+        pattern = format:gsub("([%^%$%(%)%.%[%]%*%+%-%?])", "%%%1"):gsub("%%d", "(%%d+)")
+        coinPatterns[format] = pattern
+    end
+    local amount = tonumber((text:match(pattern)))
+    if not amount then
+        return total, rest
+    end
+    return (total or 0) + amount * worth, (rest:gsub(pattern, "", 1))
+end
 
 -- The coin a money slot's text names, in copper, read with the client's own "%d Gold" / "%d Silver" / "%d Copper".
 local function Copper(text)
     if type(text) ~= "string" then
         return nil
     end
-    local total, any = 0, false
-    for format, worth in pairs({ [GOLD_AMOUNT or false] = 10000, [SILVER_AMOUNT or false] = 100, [COPPER_AMOUNT or false] = 1 }) do
-        if type(format) == "string" then
-            local pattern = format:gsub("([%^%$%(%)%.%[%]%*%+%-%?])", "%%%1"):gsub("%%d", "(%%d+)")
-            local amount = tonumber((text:match(pattern)))
-            if amount then
-                total, any = total + amount * worth, true
-            end
-        end
-    end
-    return any and total or nil
+    local total, rest = nil, text
+    total, rest = Coin(text, rest, total, GOLD_AMOUNT, 10000)
+    total, rest = Coin(text, rest, total, SILVER_AMOUNT, 100)
+    total, rest = Coin(text, rest, total, COPPER_AMOUNT, 1)
+    -- Every number in the text must have been read: a part of the coin is not the coin. A digit the format itself
+    -- holds (the plural mark of some locales, "%d |4coin:coins;") is not one of them.
+    return total and not rest:find("%d") and total or nil
 end
 
 -- A loot window that is neither a disenchant's nor a gather's: corpses, if every source it names is one.
@@ -445,19 +549,24 @@ local function CorpseLoot()
     if ns.Try(IsInGroup) == true or type(GetLootSourceInfo) ~= "function" then
         return
     end
-    local corpses, order = {}, {}   -- [guid] = { creature, items = {}, copper }
+    local corpses, order = {}, {}   -- [guid] = { creature, items = {} }
     local windowCopper, shares = nil, nil
     for slot = 1, ns.Try(GetNumLootItems) or 0 do
-        local sources = { ns.Try(GetLootSourceInfo, slot) }
+        local sources = Pack(ns.Try(GetLootSourceInfo, slot))
+        local named = math.ceil(sources.n / 2)   -- the corpses this slot names
         local _, name, quantity, _, _, _, quest = ns.Try(GetLootSlotInfo, slot)
+        quantity = ns.Plain(quantity)
+        if type(quantity) ~= "number" or quantity < 1 then
+            quantity = 1   -- never 0: the site refuses a record that holds an item less often than it counts it
+        end
         local item = ItemID(ns.Plain(ns.Try(GetLootSlotLink, slot)))
         local money = not item and ns.Plain(ns.Try(GetLootSlotType, slot)) == MONEY_SLOT
         if money then
             windowCopper, shares = Copper(ns.Plain(name)), {}
         end
-        for j = 1, #sources, 2 do
+        for j = 1, sources.n, 2 do
             local guid, amount = ns.Plain(sources[j]), ns.Plain(sources[j + 1])
-            local creature = type(guid) == "string" and tonumber(guid:match("^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
+            local creature = CreatureID(guid)
             if not creature then
                 return   -- a chest, an item, or a source the client keeps to itself: not ours to count
             end
@@ -468,11 +577,17 @@ local function CorpseLoot()
                 order[#order + 1] = guid
             end
             if type(amount) ~= "number" or amount < 1 then
-                amount = type(ns.Plain(quantity)) == "number" and ns.Plain(quantity) or 1
+                amount = nil   -- the client names the corpse but not its share of the slot
             end
             if money then
-                shares[guid] = amount
+                shares[guid] = amount or 0
             elseif item and not ns.Plain(quest) then
+                if not amount then
+                    -- The slot's quantity, split between the corpses it names: what the window holds is counted
+                    -- once, not once per corpse.
+                    local nth = (j + 1) / 2
+                    amount = math.max(1, math.floor(quantity / named) + (nth <= quantity % named and 1 or 0))
+                end
                 corpse.items[item] = (corpse.items[item] or 0) + amount
             end
         end
@@ -485,12 +600,7 @@ local function CorpseLoot()
     end
     local changed = false
     for _, guid in ipairs(order) do
-        if not seen[guid] then
-            seen[guid] = true
-            seenOrder[#seenOrder + 1] = guid
-            if #seenOrder > MAX_SEEN then
-                seen[table.remove(seenOrder, 1)] = nil
-            end
+        if MarkSeen(guid) then
             local copper
             if not shares then
                 copper = 0
@@ -540,6 +650,17 @@ local function OnSpellcast(event, unit, cast, spell)
         elseif gather and not OtherCast(gather.cast, cast) then
             gather = nil
         end
+    elseif ByName(NOT_A_DROP, spell) then
+        if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_SUCCEEDED" then
+            if not taking or cast == nil or taking.cast ~= cast then
+                taking = { t = GetTime(), cast = cast, skin = ByName(NOT_A_DROP, spell) == "skin" }
+            elseif not taking.taken then
+                taking.t = GetTime()   -- the window follows the end of the cast, however long the cast took
+            end
+            -- Else its window opened before the cast was reported as done: this report announces no other one.
+        elseif taking and not OtherCast(taking.cast, cast) then
+            taking = nil
+        end
     elseif event == "UNIT_SPELLCAST_START" then
         local started = CraftStarted(spell)
         if started then
@@ -580,9 +701,18 @@ function Scan.Init()
                 ResolveDisenchant()
             elseif gather and GatherLoot() then
                 lootRead = true
-            elseif not lootRead and not pending then
+            elseif not lootRead and not pending and (ns.Try(GetNumLootItems) or 0) > 0 then
+                -- Only a window that shows its content is read: an announcement that comes before it must not
+                -- use up the one reading of this window.
                 lootRead = true
-                CorpseLoot()
+                if taking and not taking.taken and GetTime() - taking.t <= GATHER_TIMEOUT then
+                    taking.taken = true
+                    if taking.skin then
+                        SkinLoot()
+                    end
+                else
+                    CorpseLoot()
+                end
             end
         elseif event == "BAG_UPDATE_DELAYED" then
             if PendingDisenchant() then

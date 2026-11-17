@@ -1,5 +1,5 @@
 -- Runs the RookieLedger addon outside the game: a stub of the WoW API with a simulated clock. The stub has no way
--- to send anything: an addon message is a failed check.
+-- to send anything: an attempt is an error, and a failed check at the end when the addon caught that error.
 --   lua5.1 tests/rookieledger_harness.lua addon/RookieLedger [saved-variables-out.lua]
 -- Prints "ok <name>" per check and exits non-zero on the first failure. With a second argument it writes client A's
 -- RookieLedgerDB in the layout the game gives a saved-variables file, for the server's parser tests.
@@ -70,7 +70,10 @@ local function newClient(name)
         return frame
     end
     env.C_Timer = { After = function(delay, f) timers[#timers + 1] = { at = clock + delay, f = f, client = c } end }
-    local function sends() error("the addon tried to send an addon message") end
+    local function sends()
+        c.sent = true   -- the addon calls the game through pcall: the error alone could go unseen
+        error("the addon tried to send an addon message")
+    end
     env.C_ChatInfo = { RegisterAddonMessagePrefix = sends, SendAddonMessage = sends }
     env.SendAddonMessage, env.SendChatMessage = sends, sends
     env.GetProfessions = function() return 1, 2 end
@@ -129,12 +132,13 @@ local function newClient(name)
     env.GetLootSourceInfo = function(slot)   -- nothing: this client names no source
         local s = c.loot[slot]
         if s.from then
-            return unpack(s.from)
+            return unpack(s.from, 1, s.from.n or #s.from)
         end
         return c.lootSource, c.lootSource and (s[2] or 1) or nil
     end
     env.C_Spell = { GetSpellName = function(id)
-        return ({ [2575] = "Minage", [2576] = "Minage", [2366] = "Cueillette", [3570] = "Cueillette", [585] = "Châtiment" })[id]
+        return ({ [2575] = "Minage", [2576] = "Minage", [2366] = "Cueillette", [3570] = "Cueillette", [585] = "Châtiment",
+            [8613] = "Dépeçage", [8617] = "Dépeçage", [921] = "Vol à la tire" })[id]
     end }
     env.C_Map = {
         GetBestMapForUnit = function() return c.place and c.place[1] end,
@@ -411,6 +415,64 @@ lootWindow({ { 2589, 1 } })
 A.lootSource = nil   -- a window that names no source
 lootWindow({ { 2589, 1 } })
 check("a chest or an unnamed source is not a corpse", own.rev == revAfterLoot)
+-- Skinning and picking a pocket open a window that names the creature too: neither holds what it dropped.
+A.lootSource = corpse(118, "0000000B05")
+A.fire("UNIT_SPELLCAST_START", "player", "skin", 8617)
+run(2)
+A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "skin", 8617)
+lootWindow({ { 2318, 1 } })
+A.lootSource = corpse(40, "0000000C01")
+A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "pick", 921)
+lootWindow({ { coin = "5 Cuivre" } })
+check("skinning and picking a pocket are not looting a corpse", own.rev == revAfterLoot and kobold.n == 3 and own.m[40] == nil)
+-- The same creature once dead, in a window announced before its content is there. Coin whose text is not read to
+-- the end is unknown, and an item the client gives no quantity of was held once.
+A.loot = {}
+A.fire("LOOT_READY")
+lootWindow({ { coin = "1 Argent\n3 Bronze" }, { 4306, 0, from = { A.lootSource } } })
+local thief = own.m[40]
+check("a creature whose pocket was picked still counts once dead", thief and thief.n == 1)
+check("coin read in part is left unknown", thief and thief.cn == 0 and thief.c == 0)
+check("an item without a quantity was held once", thief and thief.i[4306][1] == 1 and thief.i[4306][2] == 1)
+-- A skinning cast given up takes no window with it: the corpse looted next is read. Some monsters are named as
+-- vehicles, and some locales write coin with a plural mark that holds a digit of its own.
+A.fire("UNIT_SPELLCAST_START", "player", "skin-2", 8613)
+A.fire("UNIT_SPELLCAST_INTERRUPTED", "player", "skin-2", 8613)
+A.lootSource = "Vehicle-0-4444-0-1-777-0000000D01"
+A.env.COPPER_AMOUNT = "%d |4pièce:pièces; de cuivre"
+lootWindow({ { coin = "7 |4pièce:pièces; de cuivre" } })
+A.env.COPPER_AMOUNT = "%d Cuivre"
+local rider = own.m[777]
+check("a corpse looted after a skinning cast given up is read, a vehicle's too", rider and rider.n == 1)
+check("coin written with a plural mark is read", rider and rider.cn == 1 and rider.c == 7)
+-- A skinning window that opens before the cast is reported as done: the report that follows announces no other
+-- window, and the corpse looted next is read.
+run(15)
+A.lootSource = corpse(525, "0000000E01")
+A.fire("UNIT_SPELLCAST_START", "player", "skin-3", 8613)
+run(2)
+lootWindow({ { 2318, 1 } })
+A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "skin-3", 8613)
+A.lootSource = corpse(525, "0000000E02")
+lootWindow({ { 2589, 1 } })
+local boar = own.m[525]
+check("a corpse looted right after a skinning window that came early is read", boar and boar.n == 1 and boar.i[2318] == nil)
+-- The hide left in the window and taken later, without a cast: still not a drop.
+run(15)
+A.lootSource = corpse(525, "0000000E01")
+lootWindow({ { 2318, 1 } })
+check("a skinned corpse opened again is not looted either", boar.n == 1 and boar.i[2318] == nil)
+-- A cast the connection held up: the window follows its end, however long ago it started.
+A.lootSource = corpse(525, "0000000E03")
+A.fire("UNIT_SPELLCAST_START", "player", "skin-4", 8613)
+run(12)
+A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "skin-4", 8613)
+lootWindow({ { 2318, 1 } })
+check("a skinning window after a held-up cast is not a corpse's", boar.n == 1 and boar.i[2318] == nil)
+-- A slot of two corpses whose shares the client does not tell: what the window holds is counted once.
+run(15)
+lootWindow({ { 2589, 5, from = { corpse(525, "0000000E04"), nil, corpse(525, "0000000E05"), nil, n = 4 } } })
+check("a slot shared without shares is split, not doubled", boar.n == 3 and boar.i[2589][1] == 6 and boar.i[2589][2] == 3)
 
 -- A skill bonus stops the recording for that profession.
 A.window = 197
@@ -439,7 +501,7 @@ A.load(A.db)
 check("leftovers of guild sync are removed", A.db.peers == nil and A.db.sync == nil and A.db.own.lr == nil
     and A.db.own.lr0 == nil and A.db.own.hold == nil and A.db.own.c[7421][3] == seenUpTo)
 A.ns.Command("")
-check("/ledger counts everything", A.printed[#A.printed]:find("5 filons et plantes récoltés, 7 cadavres fouillés", 1, true), A.printed[#A.printed])
+check("/ledger counts everything", A.printed[#A.printed]:find("5 filons et plantes récoltés, 12 cadavres fouillés", 1, true), A.printed[#A.printed])
 
 -- Saved-variables layout -------------------------------------------------------
 
@@ -479,6 +541,7 @@ if OUT then
     print("wrote " .. OUT)
 end
 for _, c in ipairs(clients) do
+    check(c.name .. " tried to send nothing", not c.sent)
     for _, line in ipairs(c.printed) do
         assert(not line:find(c.db.token, 1, true) or line:find("jeton"), "token printed outside /ledger token")
     end
