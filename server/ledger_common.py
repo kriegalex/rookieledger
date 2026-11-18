@@ -311,7 +311,9 @@ def connect(path=DB_PATH):
         CREATE TABLE IF NOT EXISTS ledger_records (
             origin TEXT NOT NULL,          -- the record's 8-hex id
             uploader TEXT NOT NULL,        -- token_hash of who sent it
-            own INTEGER NOT NULL,          -- always 1 now; 0 marked a copy relayed for another member
+            own INTEGER NOT NULL,          -- 1: the uploader's own record. 0 marked a copy relayed for another
+                                           -- member under guild sync: never written again, and not to be given
+                                           -- another meaning, since purge_relayed deletes every such row
             rev INTEGER NOT NULL,
             build INTEGER NOT NULL,
             changed_at INTEGER NOT NULL,   -- the record's own clock (epoch seconds)
@@ -375,6 +377,14 @@ def store_upload(con, uploader, origin, own):
     con.execute("UPDATE ledger_tokens SET last_upload = ?, origin = ? WHERE token_hash = ?", (stamp, origin, uploader))
     con.commit()
     return changed
+
+
+def purge_relayed(con):
+    """Deletes the copies that members relayed for others under guild sync (own = 0), which nothing reads. Returns
+    how many rows went."""
+    cur = con.execute("DELETE FROM ledger_records WHERE own = 0")
+    con.commit()
+    return cur.rowcount
 
 
 def current_records(con):

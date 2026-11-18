@@ -292,6 +292,11 @@ class Endpoint(unittest.TestCase):
         con.execute("INSERT INTO ledger_records VALUES ('eeeeeeee', ?, 0, 5, 1, 1, 'x', '{}')", (lc.token_hash(TOKEN),))
         con.commit()
         self.assertEqual(sorted(lc.current_records(con)), ["0876cf1e"])
+        # Purging those copies leaves every member's own record where it was.
+        self.assertEqual(lc.purge_relayed(con), 1)
+        self.assertEqual(lc.purge_relayed(con), 0)
+        self.assertEqual(con.execute("SELECT origin, own FROM ledger_records").fetchall(), [("0876cf1e", 1)])
+        self.assertEqual(sorted(lc.current_records(con)), ["0876cf1e"])
         self.assertEqual(lc.revoke_token(con, "A"), 1)
         self.assertEqual(lc.current_records(con), {})
         con.close()
