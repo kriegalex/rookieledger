@@ -24,6 +24,11 @@ No character name, account name, realm, guild name, chat, gold total or inventor
 than that of the record's last change. A record is named by a random 8-digit id made on first login. A record only
 grows: a skill range widens, a count goes up.
 
+Beside the record, the addon keeps one small file per character that never leaves your computer: the game's own
+names for the last 500 corpses it counted, so that a corpse opened again after a reload or a new login is not
+counted twice. Those names tell the realm and when each monster appeared, which is why they are kept out of the
+record. The companion app does not read that file.
+
 Gathering places are positions you stood at. They are in your saved file and, if you use the companion app, on your
 guild's site, where the guild's ledger keeper can read them.
 
@@ -38,8 +43,8 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 | `/ledger token` | Shows your upload token, to give to your guild's ledger keeper |
 
 **The addon sends nothing**, in game or out of it: no addon messages, no chat, nothing to other players. It writes
-its record to its saved file when you log out, as every addon does. Without the companion app the record never
-leaves your computer.
+its record and the per-character file to its saved files when you log out, as every addon does. Without the
+companion app the record never leaves your computer.
 
 The addon is free, its code is readable, and it shows no advertising, as Blizzard's add-on policy requires.
 
@@ -74,8 +79,10 @@ block unsigned programs with no bypass.
 
 - It contacts one address only: the upload site (by default the site of the guild this addon was written for).
 - Until your token is registered, it asks "is this token known?" at most once every 30 minutes and sends nothing else.
-- Once registered, it sends the addon's saved file (`RookieLedger.lua`) when its content has changed, with the token.
-  That file holds the record described above, gathering places included.
+- Once registered, it sends the addon's account-wide saved file
+  (`WTF/Account/<account>/SavedVariables/RookieLedger.lua`) when its content has changed, with the token. That file
+  holds the record described above, gathering places included. The per-character file of the same name, one folder
+  deeper, is not read.
 - It reads no other file, sends no telemetry and does not update itself.
 
 The token is the only credential. Give it to the ledger keeper and to nobody else; to stop uploading, run
@@ -88,12 +95,16 @@ The token is the only credential. Give it to the ledger keeper and to nobody els
 ```sh
 python3 -I server/ledger_ingest.py --port 8787 --db data/ledger.sqlite   # behind a TLS reverse proxy
 python3 -I server/ledger_admin.py add <token> "<who>"                   # register a member's token
-python3 -I server/ledger_admin.py list | revoke <token or who> | unbind <token or who> | summary
+python3 -I server/ledger_admin.py list | revoke <token or who> | unbind <token or who> | summary | purge
 ```
 
 An unknown token is refused before the request body is read. A token is tied to the record id of its first upload,
 so a member cannot upload under another member's id; `unbind` lifts the tie for a member whose saved file was lost.
 Members point the companion app at your site once: `--url https://<your site>/api/ledger/v1`.
+
+A database that received uploads from versions with guild sync (before v0.2.0) still holds the copies of other
+members' records those versions sent along. Nothing reads them; `purge` deletes them. Copy the SQLite file first:
+a purge cannot be undone.
 
 ## Development
 
@@ -105,10 +116,12 @@ cd companion && go test ./...                  # CI runs these on Linux and on W
 A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/ledger_common.py` (`check_record`)
 and both tests together.
 
-Releases: push a tag such as `v0.2.0`. The workflow runs the tests above on the tagged commit and publishes nothing
-if one fails. It then packages the addon with the [BigWigs packager](https://github.com/BigWigsMods/packager),
-uploads it to CurseForge and Wago when their tokens are set as repository secrets, and attaches the companion
-binaries to the GitHub release. Update `CHANGELOG.md` first: it is the release text.
+Releases: push a tag such as `v0.2.0`. The workflow runs the tests above on the tagged commit, builds the companion
+binaries and checks that `CHANGELOG.md` starts with `# RookieLedger v0.2.0`; it publishes nothing if one of these
+fails. It then packages the addon with the [BigWigs packager](https://github.com/BigWigsMods/packager), uploads it
+to CurseForge and Wago when their tokens are set as repository secrets, and attaches the binaries to the GitHub
+release. Update `CHANGELOG.md` first: it is the release text. A tag with a suffix, such as `v0.2.1-beta1`, is
+checked against the heading of its version, `# RookieLedger v0.2.1`.
 
 ## Licence
 
