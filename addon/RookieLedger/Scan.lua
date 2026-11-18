@@ -37,6 +37,47 @@ local GATHER = { [2575] = 1, [2366] = 2 }   -- Mining, Herb Gathering: the kind 
 local GATHER_TIMEOUT = 10   -- from the start of the cast to its loot window
 local NOT_A_DROP = { [8613] = "skin", [921] = "pocket" }   -- Skinning, Pick Pocket: loot of a creature that it did not drop
 
+local SpellName = (C_Spell and C_Spell.GetSpellName) or GetSpellInfo
+
+-- What the log says ------------------------------------------------------------
+-- The window's log shows names, which the record does not hold: they are taken here, when the thing is recorded.
+
+local links = {}   -- [item id] = the last link a loot window or the bags gave for it
+
+local function ItemText(item)
+    return links[item] or ns.L.item:format(item)
+end
+
+-- "link x2, link" for { [item] = quantity }, in the order of the ids.
+local function LootText(loot)
+    local ids = {}
+    for item in pairs(loot) do
+        ids[#ids + 1] = item
+    end
+    table.sort(ids)
+    for i, item in ipairs(ids) do
+        ids[i] = ItemText(item) .. (loot[item] > 1 and (" x" .. loot[item]) or "")
+    end
+    return #ids > 0 and table.concat(ids, ", ") or nil
+end
+
+local function CoinText(copper)
+    return ns.Plain(ns.Try(GetCoinTextureString, copper)) or ns.L.copper:format(copper)
+end
+
+-- The name of the creature a GUID names, if the player points at it; else "creature 118".
+local function CreatureText(guid, creature)
+    for _, unit in ipairs({ "target", "mouseover", "softinteract" }) do
+        if ns.Plain(ns.Try(UnitGUID, unit)) == guid then
+            local name = ns.Plain(ns.Try(UnitName, unit))
+            if type(name) == "string" and name ~= "" then
+                return name
+            end
+        end
+    end
+    return ns.L.creature:format(creature)
+end
+
 local timers = {}
 
 -- Runs f once, delay seconds after the last call with this key.
@@ -138,17 +179,18 @@ function Scan.Colours()
     if type(ids) ~= "table" or #ids == 0 then
         ids = ns.Try(TradeSkill.GetFilteredRecipeIDs)
     end
-    local changed = false
+    local changed = 0
     for _, recipe in ipairs(type(ids) == "table" and ids or {}) do
         local colour, info = RecipeColour(recipe)
         if colour and info.learned and not info.isDummyRecipe and type(recipe) == "number" then
             if Record.Observe(ns.db.own, recipe, skillLine, colour, rank[1]) then
-                changed = true
+                changed = changed + 1
             end
         end
     end
-    if changed then
+    if changed > 0 then
         ns.Touch()
+        ns.Log("c", ns.L.logColours:format(changed), changed)
     end
 end
 
@@ -172,6 +214,9 @@ local function ResolveCraft()
     end
     Record.Craft(ns.db.own, c.recipe, c.rank, c.colour, ups)
     ns.Touch()
+    local name = ns.Plain((ns.Try(SpellName, c.recipe)))
+    name = type(name) == "string" and name or ns.L.recipe:format(c.recipe)
+    ns.Log("s", ups > 0 and ns.L.logUp:format(name, ups) or ns.L.logNoUp:format(name))
 end
 
 local function CraftStarted(recipe)
@@ -257,6 +302,7 @@ local function Bags()
                 local link = ns.Plain(info.hyperlink)
                 local id = ItemID(link)
                 if id then
+                    links[id] = link
                     local entry = found[id] or { 0, link }
                     entry[1] = entry[1] + (ns.Plain(info.stackCount) or 1)
                     found[id] = entry
@@ -281,9 +327,13 @@ end
 local function ReadLoot()
     local loot, any = {}, false
     for slot = 1, ns.Try(GetNumLootItems) or 0 do
-        local id = ItemID(ns.Plain(ns.Try(GetLootSlotLink, slot)))
+        local link = ns.Plain(ns.Try(GetLootSlotLink, slot))
+        local id = ItemID(link)
         local _, _, quantity = ns.Try(GetLootSlotInfo, slot)
         quantity = ns.Plain(quantity)
+        if id then
+            links[id] = link
+        end
         if id and type(quantity) == "number" and quantity > 0 then
             loot[id] = (loot[id] or 0) + quantity
             any = true
@@ -355,11 +405,11 @@ local function ResolveDisenchant()
     end
     Record.Disenchant(ns.db.own, gone, level, quality, class, d.loot)
     ns.Touch()
+    ns.Log("d", ns.L.logDisenchant:format(ItemText(gone), LootText(d.loot) or ns.L.nothing))
 end
 
 -- Gathering ------------------------------------------------------------------
 
-local SpellName = (C_Spell and C_Spell.GetSpellName) or GetSpellInfo
 local NAME_TRIES = 5   -- casts after which a name the client still does not give is done without
 -- [GATHER or NOT_A_DROP] = { names = { [spell name] = value }, tries = casts that asked for the names,
 --   spells = { [spell id] = value, false for a spell that is not one of them } }
@@ -468,6 +518,7 @@ local function GatherLoot()
     gather = nil
     Record.Gather(ns.db.own, node, g.kind, loot, Place())
     ns.Touch()
+    ns.Log("g", (g.kind == 1 and ns.L.vein or ns.L.herb) .. ns.L.colon .. (LootText(loot) or ns.L.nothing))
     return true
 end
 
@@ -585,7 +636,11 @@ local function CorpseLoot()
         if type(quantity) ~= "number" or quantity < 1 then
             quantity = 1   -- never 0: the site refuses a record that holds an item less often than it counts it
         end
-        local item = ItemID(ns.Plain(ns.Try(GetLootSlotLink, slot)))
+        local link = ns.Plain(ns.Try(GetLootSlotLink, slot))
+        local item = ItemID(link)
+        if item then
+            links[item] = link
+        end
         local money = not item and ns.Plain(ns.Try(GetLootSlotType, slot)) == MONEY_SLOT
         if money then
             windowCopper, shares = Copper(ns.Plain(name)), {}
@@ -637,6 +692,11 @@ local function CorpseLoot()
             end
             Record.Corpse(ns.db.own, corpses[guid].creature, copper, corpses[guid].items)
             changed = true
+            local held = LootText(corpses[guid].items)
+            if copper and copper > 0 then
+                held = (held and (held .. ", ") or "") .. CoinText(copper)
+            end
+            ns.Log("m", CreatureText(guid, corpses[guid].creature) .. ns.L.colon .. (held or ns.L.nothing))
         end
     end
     if changed then

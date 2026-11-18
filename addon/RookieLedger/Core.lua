@@ -10,6 +10,9 @@
 --           (see Scan.lua). They are the game's own names for them, which tell the realm and when each appeared:
 --           the reason they are kept here and not in the record.
 --   next    the place in seen that the next corpse takes.
+--   log     the last things recorded, as the window shows them: { time, kind, text } each.
+--   minimap where the minimap button sits and whether it is hidden (the table LibDBIcon keeps).
+--   window  where the window was left.
 -- The addon sends nothing, in game or out of it: the game writes these tables to files at logout.
 local ADDON, ns = ...
 
@@ -47,21 +50,41 @@ local TEXTS = {
         announce = "%s loaded. /ledger for details.",
         loaded = "recording recipe colours, skill-ups, disenchants, gathering and monster loot. /ledger for details.",
         first = "to add your data to the guild site, give your token to the guild's ledger keeper: /ledger token",
-        status = "%d recipes with a colour, %d crafts, %d disenchants, %d veins and herbs gathered, %d corpses looted.",
+        status = "%d recipes observed, %d crafts, %d disenchants, %d veins and herbs gathered, %d corpses looted.",
         token = "Your token (Ctrl+C to copy). Give it to the guild's ledger keeper, to nobody else:",
         tokenChat = "token: %s",
-        help = "/ledger (status) | /ledger token",
+        help = "/ledger (status) | /ledger show | /ledger minimap | /ledger token",
         skipped = "a skill bonus is active (racial or item): colours are not recorded for this profession while it lasts.",
+        rowC = "Recipes observed", rowS = "Crafts", rowD = "Disenchants", rowG = "Veins and herbs", rowM = "Corpses looted",
+        session = "This session", total = "In total", recent = "Last recorded", logEmpty = "Nothing recorded yet.",
+        hintLeft = "Left click: window", hintRight = "Right click: token",
+        minimapOn = "minimap button shown.", minimapOff = "minimap button hidden. /ledger minimap brings it back.",
+        minimapNone = "this copy of the addon has no minimap button (its libraries are missing). /ledger show opens the window.",
+        optOpen = "Open the window", optMinimap = "Show the minimap button",
+        optAbout = "Records what the game shows you while you play, for your guild's site. /ledger show opens the window.",
+        logColours = "Difficulty noted for %d recipes", logUp = "%s: +%d skill", logNoUp = "%s: no skill point",
+        logDisenchant = "%s disenchanted: %s", vein = "Vein", herb = "Herb", creature = "creature %d", item = "item %d",
+        recipe = "recipe %d", copper = "%d copper", nothing = "nothing", colon = ": ",
     },
     frFR = {
         announce = "%s chargé. /ledger pour le détail.",
         loaded = "note la couleur des recettes, les points de compétence, les désenchantements, la récolte et le butin des monstres. /ledger pour le détail.",
         first = "pour ajouter vos données au site de la guilde, donner votre jeton au responsable du registre : /ledger token",
-        status = "%d recettes avec une couleur, %d fabrications, %d désenchantements, %d filons et plantes récoltés, %d cadavres fouillés.",
+        status = "%d recettes observées, %d fabrications, %d désenchantements, %d filons et plantes récoltés, %d cadavres fouillés.",
         token = "Votre jeton (Ctrl+C pour copier). À donner au responsable du registre de la guilde, à personne d'autre :",
         tokenChat = "jeton : %s",
-        help = "/ledger (état) | /ledger token",
+        help = "/ledger (état) | /ledger show | /ledger minimap | /ledger token",
         skipped = "un bonus de compétence est actif (racial ou objet) : les couleurs ne sont pas notées pour ce métier tant qu'il dure.",
+        rowC = "Recettes observées", rowS = "Fabrications", rowD = "Désenchantements", rowG = "Filons et plantes", rowM = "Cadavres fouillés",
+        session = "Cette session", total = "Au total", recent = "Derniers enregistrements", logEmpty = "Rien d'enregistré pour l'instant.",
+        hintLeft = "Clic gauche : fenêtre", hintRight = "Clic droit : jeton",
+        minimapOn = "bouton de la minicarte affiché.", minimapOff = "bouton de la minicarte masqué. /ledger minimap le fait revenir.",
+        minimapNone = "cette copie de l'addon n'a pas de bouton de minicarte (ses bibliothèques manquent). /ledger show ouvre la fenêtre.",
+        optOpen = "Ouvrir la fenêtre", optMinimap = "Afficher le bouton de la minicarte",
+        optAbout = "Note ce que le jeu vous montre pendant que vous jouez, pour le site de la guilde. /ledger show ouvre la fenêtre.",
+        logColours = "Difficulté notée pour %d recettes", logUp = "%s : +%d compétence", logNoUp = "%s : pas de point de compétence",
+        logDisenchant = "%s désenchanté : %s", vein = "Filon", herb = "Plante", creature = "créature %d", item = "objet %d",
+        recipe = "recette %d", copper = "%d cuivre", nothing = "rien", colon = " : ",
     },
 }
 local L = TEXTS[GetLocale and GetLocale() or "enUS"] or TEXTS.enUS
@@ -145,8 +168,32 @@ local function InitDB()
         RookieLedgerLocal = here
     end
     here.v = ns.FORMAT
+    for _, part in ipairs({ "log", "minimap", "window" }) do
+        if type(here[part]) ~= "table" then
+            here[part] = {}
+        end
+    end
     ns.here = here
     return fresh
+end
+
+-- The log and the counts of this session --------------------------------------
+
+local MAX_LOG = 50
+ns.session = {}   -- [kind] = how many were recorded since login: c, s, d, g, m as the sections of the record
+
+-- Notes that something was recorded: n of kind, told by text (the window shows it as it is). Kept per character,
+-- on this computer only.
+function ns.Log(kind, text, n)
+    ns.session[kind] = (ns.session[kind] or 0) + (n or 1)
+    local log = ns.here.log
+    log[#log + 1] = { time(), kind, text }
+    while #log > MAX_LOG do
+        table.remove(log, 1)
+    end
+    if ns.UI then
+        ns.UI.Refresh()
+    end
 end
 
 -- Marks our record as changed: the companion app uploads it after the next logout.
@@ -196,7 +243,8 @@ local function ShowToken()
     StaticPopup_Show("ROOKIELEDGER_TOKEN")
 end
 
-local function Status()
+-- What the record holds, by section: recipes with a colour, crafts, disenchants, gathers, corpses.
+function ns.Totals()
     local own = ns.db.own
     local crafts, disenchants, gathers, corpses = 0, 0, 0, 0
     for _, creature in pairs(own.m) do
@@ -211,7 +259,12 @@ local function Status()
     for _, item in pairs(own.d) do
         disenchants = disenchants + item.n
     end
-    ns.Print(ns.L.status, Count(own.c), crafts, disenchants, gathers, corpses)
+    return { c = Count(own.c), s = crafts, d = disenchants, g = gathers, m = corpses }
+end
+
+local function Status()
+    local t = ns.Totals()
+    ns.Print(ns.L.status, t.c, t.s, t.d, t.g, t.m)
 end
 
 local function Command(text)
@@ -220,6 +273,10 @@ local function Command(text)
         Status()
     elseif word == "token" or word == "jeton" then
         ShowToken()
+    elseif (word == "show" or word == "fenetre" or word == "fenêtre") and ns.UI then
+        ns.UI.Toggle()
+    elseif word == "minimap" and ns.UI then
+        ns.UI.ToggleMinimap()
     else
         ns.Print(ns.L.help)
     end
@@ -244,6 +301,9 @@ frame:SetScript("OnEvent", function(_, event, name)
         SlashCmdList.ROOKIELEDGER = Command
     elseif ns.db then
         ns.Scan.Init()
+        if ns.UI then
+            ns.UI.Init()
+        end
         ns.Print(ns.L.announce, ns.version)
         if ns.fresh then
             ns.Print(ns.L.loaded)

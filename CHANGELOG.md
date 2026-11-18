@@ -1,8 +1,9 @@
-# RookieLedger v0.2.1
+# RookieLedger v0.3.0
 
-- New: the addon has its own icon in the game's addon list.
-- New: the addon says its version in the chat at every login. The explanation of the token still shows on first
-  login only.
-- Fixed: a corpse looted in part and opened again after a reload, a disconnection or a new login was counted as a
-  second corpse holding only what was left. The addon now remembers the corpses it counted in a small file per
-  character. That file stays on your computer: the companion app does not read it.
+- New: a window that shows what the addon recorded last (the monster, the items as links, the coin) and the counts
+  of this session and in total. Open it with `/ledger show`, from the minimap button or from the game's AddOns
+  options.
+- New: a minimap button. Left click opens the window, right click shows your token, and its tooltip gives the
+  counts. `/ledger minimap` hides it or brings it back.
+- The list of what was recorded last is kept per character on your computer. It is not part of the record and the
+  companion app does not read it.

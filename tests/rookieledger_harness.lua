@@ -4,7 +4,7 @@
 -- Prints "ok <name>" per check and exits non-zero on the first failure. With a second argument it writes client A's
 -- RookieLedgerDB in the layout the game gives a saved-variables file, for the server's parser tests.
 local ADDON_DIR, OUT = arg[1], arg[2]
-local FILES = { "Core.lua", "Record.lua", "Scan.lua" }
+local FILES = { "Core.lua", "Record.lua", "Scan.lua", "UI.lua" }
 
 local clock = 0
 local timers = {}
@@ -45,7 +45,7 @@ end
 
 local function newClient(name)
     local c = { name = name, online = true, frames = {}, printed = {}, version = "@project-version@",
-        profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {} }
+        profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {}, texts = {}, named = {} }
     local env = setmetatable({}, { __index = _G })
     c.env = env
     env.print = function(text) c.printed[#c.printed + 1] = text end
@@ -56,22 +56,74 @@ local function newClient(name)
     env.C_AddOns = { GetAddOnMetadata = function(addon, field)
         return addon == "RookieLedger" and field == "Version" and c.version or nil
     end }
-    env.UnitGUID = function() return "Player-6941-" .. name end
+    env.UnitGUID = function(unit) return unit == "target" and c.target or ("Player-6941-" .. name) end
+    env.UnitName = function(unit) return unit == "target" and c.targetName or name end
+    env.date = os.date
     env.IsInGroup = function() return c.grouped == true end
     env.GOLD_AMOUNT, env.SILVER_AMOUNT, env.COPPER_AMOUNT = "%d Or", "%d Argent", "%d Cuivre"
     env.SlashCmdList, env.StaticPopupDialogs = {}, {}
     env.StaticPopup_Show = function(which) c.popup = which end
-    env.CreateFrame = function()
-        local frame = { events = {} }
-        function frame:RegisterEvent(event) self.events[event] = true end
-        function frame:RegisterUnitEvent(event, unit)
+    -- A frame, a font string or a texture: the few methods the checks look at, and any other method as one that
+    -- does nothing, so that the interface code runs to its end here.
+    local function widget()
+        local w = { events = {}, scripts = {}, lines = {}, shown = true }
+        function w:RegisterEvent(event) self.events[event] = true end
+        function w:RegisterUnitEvent(event, unit)
             assert(unit == "player", "unit events are asked for the player only")
             self.events[event] = true
         end
-        function frame:SetScript(_, handler) self.handler = handler end
+        function w:SetScript(script, handler)
+            self.scripts[script] = handler
+            if script == "OnEvent" then self.handler = handler end
+        end
+        function w:Show()
+            local was = self.shown
+            self.shown = true
+            if not was and self.scripts.OnShow then self.scripts.OnShow(self) end
+        end
+        function w:Hide() self.shown = false end
+        function w:IsShown() return self.shown end
+        function w:SetText(text) self.text = text end
+        function w:SetChecked(value) self.checked = value end
+        function w:AddMessage(text) self.lines[#self.lines + 1] = text end
+        function w:Clear() self.lines = {} end
+        function w:GetPoint() return "TOPLEFT", nil, "TOPLEFT", 40, -60 end
+        function w:CreateFontString()
+            local text = widget()
+            c.texts[#c.texts + 1] = text
+            return text
+        end
+        function w:CreateTexture() return widget() end
+        return setmetatable(w, { __index = function(_, key)
+            if key ~= "handler" then return function() end end
+        end })
+    end
+    env.CreateFrame = function(kind, frameName)
+        local frame = widget()
+        frame.kind = kind
         c.frames[#c.frames + 1] = frame
+        if frameName then c.named[frameName] = frame end
+        if kind == "ScrollingMessageFrame" then c.messages = frame end
         return frame
     end
+    env.UIParent, env.GameTooltip, env.GameFontHighlightSmall, env.UISpecialFrames = widget(), widget(), {}, {}
+    env.Settings = {
+        RegisterCanvasLayoutCategory = function(_, panelName) return panelName end,
+        RegisterAddOnCategory = function(category) c.options = category end,
+    }
+    -- The two libraries of the minimap button, as far as the addon uses them. c.nolibs: a copy without them.
+    local libs = {
+        ["LibDataBroker-1.1"] = { NewDataObject = function(_, _, object) c.broker = object return object end },
+        ["LibDBIcon-1.0"] = {
+            Register = function(_, _, object, db)
+                assert(object.icon, "LibDBIcon refuses an object without an icon")
+                c.icon = { db = db, shown = not db.hide }
+            end,
+            Hide = function() c.icon.shown = false end,
+            Show = function() c.icon.shown = true end,
+        },
+    }
+    env.LibStub = setmetatable({}, { __call = function(_, library) return not c.nolibs and libs[library] or nil end })
     env.C_Timer = { After = function(delay, f) timers[#timers + 1] = { at = clock + delay, f = f, client = c } end }
     local function sends()
         c.sent = true   -- the addon calls the game through pcall: the error alone could go unseen
@@ -160,7 +212,7 @@ local function newClient(name)
         end
     end
     function c.load(saved)
-        c.frames, c.ns = {}, {}
+        c.frames, c.ns, c.texts, c.named, c.messages, c.icon, c.broker, c.options = {}, {}, {}, {}, nil, nil, nil, nil
         env.RookieLedgerDB = saved
         for _, file in ipairs(FILES) do
             local chunk = assert(loadfile(ADDON_DIR .. "/" .. file))
@@ -383,8 +435,13 @@ local function lootWindow(slots)
     A.loot = {}
 end
 A.lootSource = corpse(299, "0000000A01")
+A.target, A.targetName = A.lootSource, "Loup"
 lootWindow({ { coin = "1 Argent\n20 Cuivre" }, { 2589, 2 }, { 771, 1 }, { 9999, 1, quest = true } })
+A.target, A.targetName = nil, nil
 local wolf = own.m[299]
+local log = A.env.RookieLedgerLocal.log
+check("the log tells the corpse by the name of the target, its items as links and its coin", log[#log][2] == "m"
+    and log[#log][3] == "Loup : |Hitem:771::|h[m]|h, |Hitem:2589::|h[m]|h x2, 120 cuivre", log[#log][3])
 check("a corpse: items of every quality and its coin, no quest item", wolf and wolf.n == 1 and wolf.cn == 1 and wolf.c == 120
     and wolf.i[2589][1] == 2 and wolf.i[2589][2] == 1 and wolf.i[771][1] == 1 and wolf.i[9999] == nil)
 lootWindow({ { 771, 1 } })
@@ -494,12 +551,19 @@ run(15)
 A.lootSource = corpse(3100, "0000000F01")
 lootWindow({ { coin = "4 Cuivre" }, { 2589, 2 } })
 local ogre = own.m[3100]
+check("the session counts what was recorded since login", A.ns.session.m == 13 and A.ns.session.g == 5
+    and A.ns.session.d == 5 and A.ns.session.s == 4 and A.ns.session.c == 7, ("m %s g %s d %s s %s c %s"):format(
+    tostring(A.ns.session.m), tostring(A.ns.session.g), tostring(A.ns.session.d), tostring(A.ns.session.s), tostring(A.ns.session.c)))
+check("the log names a corpse nobody points at by its id", #log == 30
+    and log[30][3] == "créature 3100 : |Hitem:2589::|h[m]|h x2, 4 cuivre", #log .. " " .. log[#log][3])
 local token, id, seenUpTo = A.db.token, A.db.id, A.db.own.c[7421][3]
 A.version, A.printed = "v0.2.1", {}
 A.load(A.db)
 check("a reload keeps the token and the record", A.db.token == token and A.db.id == id and A.db.own.c[7421][3] == seenUpTo)
 check("every login says the version, and nothing more once the token is made", #A.printed == 1
     and A.printed[1]:find("v0.2.1 chargé. /ledger pour le détail.", 1, true), A.printed[1])
+check("a reload keeps the log and starts the session's counts again", #A.env.RookieLedgerLocal.log == 30
+    and A.env.RookieLedgerLocal.log[30][3]:find("créature 3100", 1, true) and next(A.ns.session) == nil)
 A.version = nil
 A.load(A.db)
 check("a client that tells no version is a copy of the repository too", A.ns.version == "dev")
@@ -540,6 +604,73 @@ check("leftovers of guild sync are removed", A.db.peers == nil and A.db.sync == 
     and A.db.own.lr0 == nil and A.db.own.hold == nil and A.db.own.c[7421][3] == seenUpTo)
 A.ns.Command("")
 check("/ledger counts everything", A.printed[#A.printed]:find("5 filons et plantes récoltés, 14 cadavres fouillés", 1, true), A.printed[#A.printed])
+
+-- The window, the minimap button and the options page ----------------------------
+
+local function text(wanted)
+    for _, t in ipairs(A.texts) do
+        if t.text == wanted then return true end
+    end
+end
+check("the minimap button is registered with the character's own table, the options page with the game",
+    A.icon and A.icon.db == A.env.RookieLedgerLocal.minimap and A.icon.shown and A.options == "RookieLedger")
+check("no window before it is asked for", A.named.RookieLedgerWindow == nil)
+A.broker.OnClick(nil, "LeftButton")
+local shown = A.named.RookieLedgerWindow
+check("a left click on the minimap button opens the window", shown and shown:IsShown() and text("Cadavres fouillés")
+    and text("14") and text("v0.2.1"))
+-- The file of this character was lost further up, and its log with it.
+check("an empty log says so", #A.messages.lines == 1 and A.messages.lines[1]:find("Rien d'enregistré", 1, true),
+    A.messages.lines[1])
+A.lootSource = corpse(4000, "0000001001")
+A.target, A.targetName = A.lootSource, "Ogre"
+lootWindow({ { 4306, 1 } })
+A.target, A.targetName, A.lootSource = nil, nil, nil
+check("what is recorded while the window is open shows at once", A.messages.lines[#A.messages.lines]:find("Ogre : ", 1, true)
+    and text("15") and text("1"), A.messages.lines[#A.messages.lines])
+A.ns.Command("show")
+check("/ledger show closes the open window", not shown:IsShown())
+A.ns.Command("fenêtre")
+check("and opens it again", shown:IsShown())
+A.popup = nil
+A.broker.OnClick(nil, "RightButton")
+check("a right click on the minimap button shows the token", A.popup == "ROOKIELEDGER_TOKEN")
+local tip = { lines = {} }
+function tip:AddLine(line) self.lines[#self.lines + 1] = line end
+function tip:AddDoubleLine(left, right) self.lines[#self.lines + 1] = left .. " = " .. right end
+A.broker.OnTooltipShow(tip)
+check("the button's tooltip gives the counts of the session and in total",
+    table.concat(tip.lines, "\n"):find("Cadavres fouillés = 1 / 15", 1, true), table.concat(tip.lines, " | "))
+A.ns.Command("minimap")
+check("/ledger minimap hides the button and remembers it", not A.icon.shown and A.env.RookieLedgerLocal.minimap.hide == true)
+A.load(A.db)
+check("a hidden button stays hidden after a reload", A.icon and not A.icon.shown)
+A.ns.Command("minimap")
+check("/ledger minimap shows it again", A.icon.shown and A.env.RookieLedgerLocal.minimap.hide == nil)
+-- A copy of the repository has no libraries: no button, and everything else as before.
+A.nolibs = true
+A.load(A.db)
+A.ns.Command("minimap")
+check("without the libraries there is no button, and /ledger minimap says so", A.icon == nil
+    and A.printed[#A.printed]:find("bibliothèques", 1, true), A.printed[#A.printed])
+A.ns.Command("show")
+A.lootSource = corpse(4000, "0000001002")
+lootWindow({ { 4306, 1 } })
+A.lootSource = nil
+check("the window and the recording work without them", A.named.RookieLedgerWindow:IsShown() and A.db.own.m[4000].n == 2
+    and A.messages.lines[#A.messages.lines]:find("créature 4000", 1, true))
+A.nolibs = nil
+for i = 1, 60 do
+    A.ns.Log("c", "line " .. i, 0)
+end
+log = A.env.RookieLedgerLocal.log
+check("the log keeps the last 50", #log == 50 and log[1][3] == "line 11" and log[50][3] == "line 60"
+    and #A.messages.lines == 50, #log)
+local failure
+for _, line in ipairs(A.printed) do
+    failure = failure or (line:find("%.lua:%d") and line)
+end
+check("no part of the interface failed", not failure, failure)
 
 -- Saved-variables layout -------------------------------------------------------
 

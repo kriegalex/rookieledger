@@ -24,10 +24,15 @@ No character name, account name, realm, guild name, chat, gold total or inventor
 than that of the record's last change. A record is named by a random 8-digit id made on first login. A record only
 grows: a skill range widens, a count goes up.
 
-Beside the record, the addon keeps one small file per character that never leaves your computer: the game's own
-names for the last 500 corpses it counted, so that a corpse opened again after a reload or a new login is not
-counted twice. Those names tell the realm and when each monster appeared, which is why they are kept out of the
-record. The companion app does not read that file.
+Beside the record, the addon keeps one small file per character that never leaves your computer. The companion app
+does not read it. It holds:
+
+- the game's own names for the last 500 corpses it counted, so that a corpse opened again after a reload or a new
+  login is not counted twice. Those names tell the realm and when each monster appeared, which is why they are kept
+  out of the record;
+- the last 50 things recorded as the window shows them, with their time and the names of the monsters you were
+  pointing at;
+- where you left the window and the minimap button.
 
 Gathering places are positions you stood at. They are in your saved file and, if you use the companion app, on your
 guild's site, where the guild's ledger keeper can read them.
@@ -40,7 +45,13 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 | Command | What it does |
 |---|---|
 | `/ledger` | Status: recipes, crafts, disenchants, gathers and corpses recorded |
+| `/ledger show` | Opens or closes the window |
+| `/ledger minimap` | Hides the minimap button or brings it back |
 | `/ledger token` | Shows your upload token, to give to your guild's ledger keeper |
+
+The window lists the last 50 things recorded (the monster or the vein, the items as links, the coin) and the counts
+of this session and in total. The minimap button opens it with a left click and shows your token with a right click;
+its tooltip gives the counts. The window can also be opened from the game's AddOns options.
 
 At every login the addon says in the chat which version is running; a copy taken from this repository instead of
 a release says `dev`.
@@ -115,6 +126,11 @@ a purge cannot be undone.
 python3 -I -m unittest discover -s tests -v    # addon (under lua5.1, against a stub of the WoW API) and server
 cd companion && go test ./...                  # CI runs these on Linux and on Windows
 ```
+
+The minimap button uses LibStub, CallbackHandler, LibDataBroker and LibDBIcon. They are not in the repository: the
+packager fetches them into the zip (`externals` in `.pkgmeta`). A copy of `addon/RookieLedger` taken from the
+repository has no button unless those four folders are put in `addon/RookieLedger/Libs/`, which git ignores;
+everything else works without them.
 
 A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/ledger_common.py` (`check_record`)
 and both tests together.

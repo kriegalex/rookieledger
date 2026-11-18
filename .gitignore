@@ -1,5 +1,6 @@
 /companion/dist/
 /data/
 /.release/
+/addon/RookieLedger/Libs/
 __pycache__/
 *.pyc
