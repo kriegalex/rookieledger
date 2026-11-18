@@ -44,6 +44,7 @@ end
 
 local TEXTS = {
     enUS = {
+        announce = "%s loaded. /ledger for details.",
         loaded = "recording recipe colours, skill-ups, disenchants, gathering and monster loot. /ledger for details.",
         first = "to add your data to the guild site, give your token to the guild's ledger keeper: /ledger token",
         status = "%d recipes with a colour, %d crafts, %d disenchants, %d veins and herbs gathered, %d corpses looted.",
@@ -53,6 +54,7 @@ local TEXTS = {
         skipped = "a skill bonus is active (racial or item): colours are not recorded for this profession while it lasts.",
     },
     frFR = {
+        announce = "%s chargé. /ledger pour le détail.",
         loaded = "note la couleur des recettes, les points de compétence, les désenchantements, la récolte et le butin des monstres. /ledger pour le détail.",
         first = "pour ajouter vos données au site de la guilde, donner votre jeton au responsable du registre : /ledger token",
         status = "%d recettes avec une couleur, %d fabrications, %d désenchantements, %d filons et plantes récoltés, %d cadavres fouillés.",
@@ -70,6 +72,18 @@ function ns.Print(text, ...)
         text = text:format(...)
     end
     print("|cffe6b422RookieLedger|r : " .. text)
+end
+
+-- Version --------------------------------------------------------------------
+
+-- The version the .toc names, "dev" for a copy of the repository: the packager writes the version in place of a
+-- marker when it builds a release.
+local function Version()
+    local version = ns.Plain(ns.Try(C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata, ADDON, "Version"))
+    if type(version) ~= "string" or version == "" or version:find("@", 1, true) then
+        return "dev"
+    end
+    return version
 end
 
 -- Token and id ---------------------------------------------------------------
@@ -224,11 +238,13 @@ frame:SetScript("OnEvent", function(_, event, name)
         end
         local _, build = GetBuildInfo()
         ns.build = tonumber(build) or 0
+        ns.version = Version()
         ns.fresh = InitDB()
         SLASH_ROOKIELEDGER1, SLASH_ROOKIELEDGER2 = "/ledger", "/rookieledger"
         SlashCmdList.ROOKIELEDGER = Command
     elseif ns.db then
         ns.Scan.Init()
+        ns.Print(ns.L.announce, ns.version)
         if ns.fresh then
             ns.Print(ns.L.loaded)
             ns.Print(ns.L.first)

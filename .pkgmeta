@@ -12,6 +12,7 @@ manual-changelog:
 # Everything that is not the addon. LICENSE and CHANGELOG.md stay in the zip.
 ignore:
   - companion
+  - media
   - server
   - tests
   - README.md

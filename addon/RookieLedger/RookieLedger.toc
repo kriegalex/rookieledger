@@ -6,6 +6,7 @@
 ## Category-enUS: Professions
 ## Category-frFR: Métiers
 ## Version: @project-version@
+## IconTexture: Interface\AddOns\RookieLedger\Media\Icon
 ## SavedVariables: RookieLedgerDB
 ## SavedVariablesPerCharacter: RookieLedgerLocal
 

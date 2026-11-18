@@ -44,7 +44,7 @@ local function colourAt(thresholds, skill)
 end
 
 local function newClient(name)
-    local c = { name = name, online = true, frames = {}, printed = {},
+    local c = { name = name, online = true, frames = {}, printed = {}, version = "@project-version@",
         profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {} }
     local env = setmetatable({}, { __index = _G })
     c.env = env
@@ -53,6 +53,9 @@ local function newClient(name)
     env.GetTime = function() return clock end
     env.GetLocale = function() return "frFR" end
     env.GetBuildInfo = function() return "1.60.1", "70374" end
+    env.C_AddOns = { GetAddOnMetadata = function(addon, field)
+        return addon == "RookieLedger" and field == "Version" and c.version or nil
+    end }
     env.UnitGUID = function() return "Player-6941-" .. name end
     env.IsInGroup = function() return c.grouped == true end
     env.GOLD_AMOUNT, env.SILVER_AMOUNT, env.COPPER_AMOUNT = "%d Or", "%d Argent", "%d Cuivre"
@@ -185,7 +188,8 @@ A.recipes = {
 A.load(nil)
 check("token is 32 hex digits", A.db.token:match("^%x+$") and #A.db.token == 32, A.db.token)
 check("id is 8 hex digits", A.db.id:match("^%x+$") and #A.db.id == 8, A.db.id)
-check("first login explains the token", #A.printed == 2)
+check("a copy of the repository says it is one", A.ns.version == "dev" and A.printed[1]:find("dev chargé. /ledger", 1, true), A.printed[1])
+check("first login explains the token", #A.printed == 3 and A.printed[3]:find("/ledger token", 1, true))
 
 A.window = 333
 A.fire("TRADE_SKILL_SHOW")
@@ -491,8 +495,15 @@ A.lootSource = corpse(3100, "0000000F01")
 lootWindow({ { coin = "4 Cuivre" }, { 2589, 2 } })
 local ogre = own.m[3100]
 local token, id, seenUpTo = A.db.token, A.db.id, A.db.own.c[7421][3]
+A.version, A.printed = "v0.2.1", {}
 A.load(A.db)
 check("a reload keeps the token and the record", A.db.token == token and A.db.id == id and A.db.own.c[7421][3] == seenUpTo)
+check("every login says the version, and nothing more once the token is made", #A.printed == 1
+    and A.printed[1]:find("v0.2.1 chargé. /ledger pour le détail.", 1, true), A.printed[1])
+A.version = nil
+A.load(A.db)
+check("a client that tells no version is a copy of the repository too", A.ns.version == "dev")
+A.version = "v0.2.1"
 lootWindow({ { 2589, 1 } })
 check("a corpse opened again after a reload is not counted twice", ogre.n == 1 and ogre.i[2589][1] == 2)
 A.lootSource = corpse(525, "0000000E01")

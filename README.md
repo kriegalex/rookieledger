@@ -42,6 +42,9 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 | `/ledger` | Status: recipes, crafts, disenchants, gathers and corpses recorded |
 | `/ledger token` | Shows your upload token, to give to your guild's ledger keeper |
 
+At every login the addon says in the chat which version is running; a copy taken from this repository instead of
+a release says `dev`.
+
 **The addon sends nothing**, in game or out of it: no addon messages, no chat, nothing to other players. It writes
 its record and the per-character file to its saved files when you log out, as every addon does. Without the
 companion app the record never leaves your computer.
