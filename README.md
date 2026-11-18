@@ -132,6 +132,10 @@ packager fetches them into the zip (`externals` in `.pkgmeta`). A copy of `addon
 repository has no button unless those four folders are put in `addon/RookieLedger/Libs/`, which git ignores;
 everything else works without them.
 
+[docs/client-behaviour.md](docs/client-behaviour.md) lists what the Forever client was seen to tell an addon about
+kills, corpses and loot windows, with the number of cases behind each statement. Read it before changing what the
+addon takes a loot window for.
+
 A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/ledger_common.py` (`check_record`)
 and both tests together.
 
