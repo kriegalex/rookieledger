@@ -5,7 +5,12 @@
 --           upload; the site accepts uploads only for tokens its owner has registered. It never goes out in game.
 --   id      8 hex digits naming this account's record on the site. Not a character name.
 --   own     this account's record (see Record.lua).
--- The addon sends nothing, in game or out of it: the game writes this table to a file at logout.
+-- RookieLedgerLocal (one per character) holds what only this computer needs and the companion app never reads:
+--   seen    the corpses counted last, so that one opened again after a reload or a new login is not counted twice
+--           (see Scan.lua). They are the game's own names for them, which tell the realm and when each appeared:
+--           the reason they are kept here and not in the record.
+--   next    the place in seen that the next corpse takes.
+-- The addon sends nothing, in game or out of it: the game writes these tables to files at logout.
 local ADDON, ns = ...
 
 ns.ADDON = ADDON
@@ -120,6 +125,13 @@ local function InitDB()
     -- What versions with guild sync kept: other members' records and the bookkeeping of what was sent.
     db.peers, db.sync, own.lr, own.lr0, own.hold = nil, nil, nil, nil, nil
     ns.db = db
+    local here = RookieLedgerLocal
+    if type(here) ~= "table" then
+        here = {}
+        RookieLedgerLocal = here
+    end
+    here.v = ns.FORMAT
+    ns.here = here
     return fresh
 end
 

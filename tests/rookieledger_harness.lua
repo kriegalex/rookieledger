@@ -485,10 +485,37 @@ A.fire("TRADE_SKILL_LIST_UPDATE")
 run(2)
 check("colours once the bonus is gone", own.c[2387] and own.c[2387][4] == 90)
 
--- A reload keeps token, id and data.
+-- A reload keeps token, id and data, and the corpses already counted: one left half looted is not a new one.
+run(15)
+A.lootSource = corpse(3100, "0000000F01")
+lootWindow({ { coin = "4 Cuivre" }, { 2589, 2 } })
+local ogre = own.m[3100]
 local token, id, seenUpTo = A.db.token, A.db.id, A.db.own.c[7421][3]
 A.load(A.db)
 check("a reload keeps the token and the record", A.db.token == token and A.db.id == id and A.db.own.c[7421][3] == seenUpTo)
+lootWindow({ { 2589, 1 } })
+check("a corpse opened again after a reload is not counted twice", ogre.n == 1 and ogre.i[2589][1] == 2)
+A.lootSource = corpse(525, "0000000E01")
+lootWindow({ { 2318, 1 } })
+check("a skinned corpse stays one after a reload", boar.n == 3 and boar.i[2318] == nil)
+local ring = A.env.RookieLedgerLocal
+check("the corpses counted are kept per character, in the order they came", ring.v == 1
+    and ring.seen[ring.next - 1] == corpse(3100, "0000000F01") and ring.seen[1] == corpse(299, "0000000A01"))
+-- A file of this character that is lost or damaged costs nothing but that memory.
+A.env.RookieLedgerLocal = { seen = { 5, "x", false, corpse(3100, "0000000F01") }, next = "z" }
+A.load(A.db)
+A.lootSource = corpse(3100, "0000000F02")
+lootWindow({ { 2589, 1 } })
+A.lootSource = corpse(3100, "0000000F01")
+lootWindow({ { 2589, 1 } })
+ring = A.env.RookieLedgerLocal
+check("a damaged file of the character is put right", ogre.n == 2 and ring.seen[1] == "x"
+    and ring.seen[3] == corpse(3100, "0000000F02") and ring.next == 4)
+A.env.RookieLedgerLocal = nil
+A.load(A.db)
+check("a lost file of the character is made again", type(A.env.RookieLedgerLocal.seen) == "table"
+    and A.env.RookieLedgerLocal.next == 1)
+A.lootSource = nil
 A.db.v = 99
 A.load(A.db)
 check("another saved format keeps the token and the record", A.db.token == token and A.db.id == id
@@ -501,7 +528,7 @@ A.load(A.db)
 check("leftovers of guild sync are removed", A.db.peers == nil and A.db.sync == nil and A.db.own.lr == nil
     and A.db.own.lr0 == nil and A.db.own.hold == nil and A.db.own.c[7421][3] == seenUpTo)
 A.ns.Command("")
-check("/ledger counts everything", A.printed[#A.printed]:find("5 filons et plantes récoltés, 12 cadavres fouillés", 1, true), A.printed[#A.printed])
+check("/ledger counts everything", A.printed[#A.printed]:find("5 filons et plantes récoltés, 14 cadavres fouillés", 1, true), A.printed[#A.printed])
 
 -- Saved-variables layout -------------------------------------------------------
 
@@ -531,6 +558,11 @@ local function dump(value, out, depth)
     out[#out + 1] = "}"
 end
 
+do
+    local out = {}
+    dump(A.db, out, 0)
+    check("the record names no corpse", not table.concat(out):find("Creature-", 1, true))
+end
 if OUT then
     local out = { "\nRookieLedgerDB = " }
     dump(A.db, out, 0)

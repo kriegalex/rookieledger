@@ -474,10 +474,12 @@ end
 -- Monster loot ---------------------------------------------------------------
 
 local MONEY_SLOT = (Enum and Enum.LootSlotType and Enum.LootSlotType.Money) or LOOT_SLOT_MONEY or 2
-local MAX_SEEN = 2000
--- Corpses already counted this session: a corpse opened again shows what was left. seenOrder holds the last
--- MAX_SEEN of them as a ring, seenNext being the place of the oldest.
+local MAX_SEEN = 500
+-- Corpses already counted: a corpse opened again shows what was left. seenOrder holds the last MAX_SEEN of them as
+-- a ring, seenNext being the place of the oldest. The ring is this character's saved table (see Core.lua), so a
+-- corpse counted before a reload or a new login is still known after it; a corpse does not outlast that many others.
 local seen, seenOrder, seenNext = {}, {}, 1
+local here   -- ns.here once the saved ring is taken up
 -- The last Skinning or Pick Pocket cast: { t, cast, skin, taken }. t is when it was last heard of, skin whether it
 -- is Skinning, taken whether its loot window has opened.
 local taking
@@ -494,7 +496,31 @@ local function MarkSeen(guid)
     seen[guid] = true
     seenOrder[seenNext] = guid
     seenNext = seenNext % MAX_SEEN + 1
+    if here then
+        here.next = seenNext
+    end
     return true
+end
+
+-- Takes up the ring this character saved, oldest first, and saves the one in use from now on. Whatever the file
+-- holds that is not a corpse's name is left out.
+local function LoadSeen()
+    local kept, from = ns.here.seen, ns.here.next
+    seen, seenOrder, seenNext, here = {}, {}, 1, nil
+    if type(kept) == "table" then
+        local n = math.min(#kept, MAX_SEEN)
+        if type(from) ~= "number" or from < 1 or from > n or from % 1 ~= 0 then
+            from = 1   -- a ring that is not full yet starts at its first place
+        end
+        for i = 0, n - 1 do
+            local guid = kept[(from + i - 1) % n + 1]
+            if type(guid) == "string" then
+                MarkSeen(guid)
+            end
+        end
+    end
+    here = ns.here
+    here.seen, here.next = seenOrder, seenNext
 end
 
 -- The open window is Skinning's. The corpses it names show nothing they dropped from now on: opened again without
@@ -676,6 +702,7 @@ local function OnSpellcast(event, unit, cast, spell)
 end
 
 function Scan.Init()
+    LoadSeen()
     local frame = CreateFrame("Frame")
     for _, event in ipairs({
         "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED", "SKILL_LINES_CHANGED",
