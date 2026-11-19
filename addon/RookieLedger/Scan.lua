@@ -785,6 +785,7 @@ local function CorpseLoot()
         shareTotal = shareTotal + amount
     end
     local changed = false
+    local map, x, y = Place()   -- one window, one place: the corpses it names lie within reach of where we stand
     for _, guid in ipairs(order) do
         if MarkSeen(guid) then
             local copper
@@ -795,7 +796,7 @@ local function CorpseLoot()
             elseif windowCopper and shareTotal == windowCopper then
                 copper = shares[guid] or 0
             end
-            Record.Corpse(ns.db.own, corpses[guid].creature, copper, corpses[guid].items)
+            Record.Corpse(ns.db.own, corpses[guid].creature, copper, corpses[guid].items, map, x, y)
             changed = true
             local held = LootText(corpses[guid].items)
             if copper and copper > 0 then

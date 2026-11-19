@@ -137,6 +137,10 @@ local function newClient(name)
     env.Settings = {
         RegisterCanvasLayoutCategory = function(_, panelName) return panelName end,
         RegisterAddOnCategory = function(category) c.options = category end,
+        OpenToCategory = function(category)
+            if c.fighting then error("blocked in combat") end
+            c.opened = category
+        end,
     }
     -- The two libraries of the minimap button, as far as the addon uses them. c.nolibs: a copy without them.
     local libs = {
@@ -676,13 +680,31 @@ A.ns.Command("show")
 check("/ledger show closes the open window", not shown:IsShown())
 A.ns.Command("fenêtre")
 check("and opens it again", shown:IsShown())
-A.popup = nil
+A.popup, A.opened = nil, nil
 A.broker.OnClick(nil, "RightButton")
-check("a right click on the minimap button shows the token", A.popup == "ROOKIELEDGER_TOKEN")
+check("a right click on the minimap button opens the options, and shows no token", A.opened == "RookieLedger"
+    and A.popup == nil)
+A.opened, A.fighting = nil, true
+A.broker.OnClick(nil, "RightButton")
+A.fighting = nil
+check("which the game may refuse in a fight, without a word", A.opened == nil)
+A.ns.Command("token")
+check("/ledger token still shows the token", A.popup == "ROOKIELEDGER_TOKEN")
 local tip = { lines = {} }
 function tip:AddLine(line) self.lines[#self.lines + 1] = line end
 function tip:AddDoubleLine(left, right) self.lines[#self.lines + 1] = left .. " = " .. right end
 A.broker.OnTooltipShow(tip)
+check("the button's tooltip says what each click does", tip.lines[#tip.lines] == "Clic droit : options"
+    and tip.lines[#tip.lines - 1] == "Clic gauche : fenêtre", tip.lines[#tip.lines])
+local openToCategory = A.env.Settings.OpenToCategory
+A.env.Settings.OpenToCategory = nil
+local bare = { lines = {} }
+bare.AddLine, bare.AddDoubleLine = tip.AddLine, tip.AddDoubleLine
+A.broker.OnTooltipShow(bare)
+A.broker.OnClick(nil, "RightButton")
+check("a client that cannot open the options from an addon promises no right click",
+    bare.lines[#bare.lines] == "Clic gauche : fenêtre" and A.opened == nil, bare.lines[#bare.lines])
+A.env.Settings.OpenToCategory = openToCategory
 check("the button's tooltip gives the counts of the session and in total",
     table.concat(tip.lines, "\n"):find("Cadavres fouillés = 1 / 15", 1, true), table.concat(tip.lines, " | "))
 A.ns.Command("minimap")
@@ -772,6 +794,46 @@ A.quests = { { id = 402, objectives = { wants("Griffe putride : 0/7") } } }
 houndCorpse({ { 2859, 1, quest = true, name = "Griffe" } })
 check("a name that only starts another item's is not that item", A.db.own.q["5000:2859"] == nil)
 A.quests = {}
+
+-- Where a corpse was looted: the cell of the map the player stood in.
+local placeBefore = A.place
+A.place = { 1429, 0.4321, 0.6549 }
+A.lootSource = corpse(7000, "0000003001")
+lootWindow({ { 2589, 1 } })
+local bear = A.db.own.m[7000]
+check("a corpse is placed in the cell of the map where it was looted", bear.n == 1 and bear.p["1429:430:655"] == 1)
+A.place = { 1429, 0.4312, 0.6561 }
+A.lootSource = corpse(7000, "0000003002")
+lootWindow({ { 2589, 1 } })
+check("a corpse looted a few steps away is in the same cell", bear.n == 2 and bear.p["1429:430:655"] == 2
+    and next(bear.p, next(bear.p)) == nil)
+A.place = { 1429, 0.999, 0 }
+A.lootSource = corpse(7000, "0000003003")
+lootWindow({ { 2589, 1 } })
+check("the edge of the map is a cell too", bear.p["1429:1000:0"] == 1)
+A.place = nil
+A.lootSource = corpse(7000, "0000003004")
+lootWindow({ { 2589, 1 } })
+check("a corpse looted where the client gives no position still counts", bear.n == 4 and bear.p["1429:430:655"] == 2)
+A.db.own.m[7001] = { n = 1, cn = 1, c = 3, i = {} }   -- as a version before places wrote it
+A.place = { 1437, 0.2, 0.3 }
+A.lootSource = corpse(7001, "0000003005")
+lootWindow({ { 2589, 1 } })
+check("an entry of before places takes them from now on", A.db.own.m[7001].n == 2 and A.db.own.m[7001].p["1437:200:300"] == 1)
+A.place = placeBefore
+
+-- How long the record took to make: the time between its changes, as far as it is play.
+local own, before = A.db.own, A.db.own.a
+check("the record tells when it began and how long it took", own.f >= 1794800000 and own.f <= own.t
+    and before >= 60, own.f .. " " .. before)
+run(100)
+A.lootSource = corpse(7000, "0000003006")
+lootWindow({ { 2589, 1 } })
+check("a change counts for the time since the one before", own.a == before + 100, own.a - before)
+run(1000)
+A.lootSource = corpse(7000, "0000003007")
+lootWindow({ { 2589, 1 } })
+check("but not for the time spent away", own.a == before + 400, own.a - before)
 
 -- The monster tooltip ------------------------------------------------------------
 -- Under a monster's tooltip: what this account's record holds of it.

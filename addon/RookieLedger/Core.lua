@@ -50,15 +50,15 @@ local TEXTS = {
     enUS = {
         announce = "%s loaded. /ledger for details.",
         loaded = "recording recipe colours, skill-ups, disenchants, gathering and monster loot. /ledger for details.",
-        first = "to add your data to the guild site, give your token to the guild's ledger keeper: /ledger token",
+        first = "to add your data to the guild site, install the companion app (see the addon's page). If the site asks for your token: /ledger token",
         status = "%d recipes observed, %d crafts, %d disenchants, %d veins and herbs gathered, %d corpses looted.",
-        token = "Your token (Ctrl+C to copy). Give it to the guild's ledger keeper, to nobody else:",
+        token = "Your token (Ctrl+C to copy). It is the key to your record: give it only to your guild's ledger keeper, and only if the site asks for it:",
         tokenChat = "token: %s",
         help = "/ledger (status) | /ledger show | /ledger tooltip | /ledger minimap | /ledger token",
         skipped = "a skill bonus is active (racial or item): colours are not recorded for this profession while it lasts.",
         rowC = "Recipes observed", rowS = "Crafts", rowD = "Disenchants", rowG = "Veins and herbs", rowM = "Corpses looted",
         session = "This session", total = "In total", recent = "Last recorded", logEmpty = "Nothing recorded yet.",
-        hintLeft = "Left click: window", hintRight = "Right click: token",
+        hintLeft = "Left click: window", hintRight = "Right click: options",
         minimapOn = "minimap button shown.", minimapOff = "minimap button hidden. /ledger minimap brings it back.",
         minimapNone = "this copy of the addon has no minimap button (its libraries are missing). /ledger show opens the window.",
         optOpen = "Open the window", optMinimap = "Show the minimap button",
@@ -75,15 +75,15 @@ local TEXTS = {
     frFR = {
         announce = "%s chargé. /ledger pour le détail.",
         loaded = "note la couleur des recettes, les points de compétence, les désenchantements, la récolte et le butin des monstres. /ledger pour le détail.",
-        first = "pour ajouter vos données au site de la guilde, donner votre jeton au responsable du registre : /ledger token",
+        first = "pour ajouter vos données au site de la guilde, installer l'application compagnon (voir la page de l'add-on). Si le site demande votre jeton : /ledger token",
         status = "%d recettes observées, %d fabrications, %d désenchantements, %d filons et plantes récoltés, %d cadavres fouillés.",
-        token = "Votre jeton (Ctrl+C pour copier). À donner au responsable du registre de la guilde, à personne d'autre :",
+        token = "Votre jeton (Ctrl+C pour copier). C'est la clé de votre registre : à ne donner qu'au responsable du registre de la guilde, et seulement si le site le demande :",
         tokenChat = "jeton : %s",
         help = "/ledger (état) | /ledger show | /ledger tooltip | /ledger minimap | /ledger token",
         skipped = "un bonus de compétence est actif (racial ou objet) : les couleurs ne sont pas notées pour ce métier tant qu'il dure.",
         rowC = "Recettes observées", rowS = "Fabrications", rowD = "Désenchantements", rowG = "Filons et plantes", rowM = "Cadavres fouillés",
         session = "Cette session", total = "Au total", recent = "Derniers enregistrements", logEmpty = "Rien d'enregistré pour l'instant.",
-        hintLeft = "Clic gauche : fenêtre", hintRight = "Clic droit : jeton",
+        hintLeft = "Clic gauche : fenêtre", hintRight = "Clic droit : options",
         minimapOn = "bouton de la minicarte affiché.", minimapOff = "bouton de la minicarte masqué. /ledger minimap le fait revenir.",
         minimapNone = "cette copie de l'addon n'a pas de bouton de minicarte (ses bibliothèques manquent). /ledger show ouvre la fenêtre.",
         optOpen = "Ouvrir la fenêtre", optMinimap = "Afficher le bouton de la minicarte",
@@ -208,10 +208,24 @@ function ns.Log(kind, text, n)
 end
 
 -- Marks our record as changed: the companion app uploads it after the next logout.
+-- How long the record took to make, for a site that takes uploads from anyone and has only this to tell a record
+-- that was played from one that was typed: f is the time of its first change, a the seconds of play its changes
+-- took. A change counts for the time since the change before it, IDLE at most; the first of a session, which has
+-- none before it, for FIRST. A record begun by an older version has no f: it gets none, since what it already
+-- holds took time nobody counted.
+local IDLE, FIRST = 300, 60
+local touched   -- time() of this session's last change
+
 function ns.Touch()
     local own = ns.db.own
+    local now = time()
     own.rev = own.rev + 1
-    own.t = time()
+    if own.rev == 1 then
+        own.f = now
+    end
+    own.a = (own.a or 0) + (touched and math.max(0, math.min(now - touched, IDLE)) or FIRST)
+    touched = now
+    own.t = now
     own.b = ns.build
 end
 

@@ -105,9 +105,9 @@ func TestUploadAddressIsRemembered(t *testing.T) {
 	if st.uploadURL() != defaultURL {
 		t.Fatalf("no address given: %q", st.uploadURL())
 	}
-	st.setURL("https://other.example/api/ledger/v1/")
+	st.setURL("https://other.example/v1/ledger/")
 	saveState(path, st)
-	if got := loadState(path).uploadURL(); got != "https://other.example/api/ledger/v1" {
+	if got := loadState(path).uploadURL(); got != "https://other.example/v1/ledger" {
 		t.Fatalf("after a restart: %q", got)
 	}
 	st.setURL("default")

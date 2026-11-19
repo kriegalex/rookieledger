@@ -1,6 +1,7 @@
 """RookieLedger: the addon in a simulated game (lua5.1), the saved-variables parser, the checks and the upload endpoint.
 No database of the pipeline is needed; the endpoint runs on a free local port with a temporary database."""
-import gzip, io, json, os, shutil, socket, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import gzip, io, json, os, shutil, socket, sqlite3, subprocess, sys, tempfile, threading, time, unittest, urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -158,7 +159,7 @@ class Checks(unittest.TestCase):
         self.assertEqual(own["d"]["2584"], {"l": 16, "q": 2, "k": 4, "n": 2, "m": {"10940": [4, 2]}})
         self.assertEqual(own["g"]["1731"], {"k": 1, "n": 4, "m": {"2770": [9, 4], "2835": [1, 1]},
                                             "p": {"1429:432:654": 3, "1429:600:200": 1}})
-        self.assertEqual(own["m"]["299"], {"n": 4, "cn": 2, "c": 370, "i": {"2589": [5, 3], "771": [1, 1]}})
+        self.assertEqual(own["m"]["299"], {"n": 4, "cn": 2, "c": 370, "i": {"2589": [5, 3], "771": [1, 1]}, "p": {}})
         self.assertNotIn("token", json.dumps(own))
         self.assertNotIn("aaaaaaaa", json.dumps(own), "records of other members in the file are not read")
 
@@ -260,8 +261,8 @@ class Endpoint(unittest.TestCase):
             patch = mock.patch.object(target, name, value)
             patch.start()
             self.addCleanup(patch.stop)
-        self.server = ledger_ingest.Server(("127.0.0.1", 0), self.db)
-        self.url = "http://127.0.0.1:%d/api/ledger/v1/" % self.server.server_address[1]
+        self.server = ledger_ingest.Server(("127.0.0.1", 0), self.db, getattr(self, "registration", "closed"))
+        self.url = "http://127.0.0.1:%d/v1/ledger/" % self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def tearDown(self):
@@ -390,14 +391,14 @@ class Endpoint(unittest.TestCase):
     def test_a_request_is_not_read_past_its_end(self):
         self.register()
         head = b"Host: x\r\nAuthorization: Bearer " + TOKEN.encode() + b"\r\n"
-        status = b"GET /api/ledger/v1/status HTTP/1.1\r\n" + head
+        status = b"GET /v1/ledger/status HTTP/1.1\r\n" + head
         # A status question that carries a body: the body is not answered as a second request.
         second = status + b"\r\n"
         answer = self.raw(status + b"Content-Length: %d\r\n\r\n" % len(second) + second)
         self.assertTrue(answer.startswith(b"HTTP/1.1 204"), answer[:60])
         self.assertEqual(answer.count(b"HTTP/1.1 "), 1, answer)
         # An upload whose length int() cannot read, or that does not say where its body ends.
-        upload = b"POST /api/ledger/v1/upload HTTP/1.1\r\n" + head
+        upload = b"POST /v1/ledger/upload HTTP/1.1\r\n" + head
         for length in (b"Content-Length: \xb2\r\n", b"Content-Length: " + b"9" * 5000 + b"\r\n",
                        b"Content-Length: 5\r\nTransfer-Encoding: chunked\r\n"):
             answer = self.raw(upload + length + b"\r\n")
@@ -408,6 +409,178 @@ class Endpoint(unittest.TestCase):
         ledger_ingest.MIN_INTERVAL = 60
         self.assertEqual(self.call("upload", body=SAVED.encode())[0], 200)
         self.assertEqual(self.call("upload", body=SAVED.encode())[0], 429)
+
+
+# SAVED as an addon from v0.6.0 on writes it: begun days ago, two hours of play.
+PLAYED = SAVED.replace('["rev"] = 7,', '["rev"] = 7,\n["f"] = 1794700000,\n["a"] = 7200,')
+LATER = 49 * 3600   # past the probation of a token that registered itself
+
+
+class OpenSite(unittest.TestCase):
+    """A site where nobody registers tokens by hand: the first upload of a token registers it."""
+    registration = "open"
+    setUp, tearDown, call, register = Endpoint.setUp, Endpoint.tearDown, Endpoint.call, Endpoint.register
+
+    def labels(self):
+        con = lc.connect(self.db)
+        try:
+            return con.execute("SELECT label, origin, revoked_at IS NULL FROM ledger_tokens ORDER BY label").fetchall()
+        finally:
+            con.close()
+
+    def test_a_first_upload_registers_its_token(self):
+        self.assertEqual(self.call("status")[0], 204)   # what lets the companion app go on to upload
+        self.assertEqual(self.labels(), [], "asking registers nothing")
+        status, body = self.call("upload", body=PLAYED.encode())
+        self.assertEqual((status, json.loads(body)), (200, {"id": "0876cf1e", "rev": 7, "stored": 1, "skipped": 0}))
+        self.assertEqual(self.labels(), [("self-0876cf1e", "0876cf1e", 1)])
+        con = lc.connect(self.db)
+        # Kept, but it counts for nothing until its probation is over.
+        self.assertEqual(lc.current_records(con), {})
+        self.assertEqual(sorted(lc.current_records(con, time.time() + LATER)), ["0876cf1e"])
+        self.assertIn("counts from", lc.digest(con)[0])
+        self.assertNotIn(TOKEN, str(con.execute("SELECT * FROM ledger_tokens").fetchall()))
+        con.close()
+        newer = SAVED.replace('["rev"] = 7', '["rev"] = 8')
+        self.assertEqual(json.loads(self.call("upload", body=newer.encode())[1])["stored"], 1)
+        self.assertEqual(len(self.labels()), 1)
+
+    def test_the_token_still_ties_a_record_to_who_made_it(self):
+        self.assertEqual(self.call("upload", body=PLAYED.encode())[0], 200)
+        stolen = PLAYED.replace('["rev"] = 7', '["rev"] = 900')
+        status, body = self.call("upload", token=OTHER, body=stolen.encode())
+        self.assertEqual(status, 409, body)
+        self.assertEqual(len(self.labels()), 1, "a refused upload leaves no token behind")
+        con = lc.connect(self.db)
+        self.assertEqual(lc.current_records(con, time.time() + LATER)["0876cf1e"]["rev"], 7)
+        con.close()
+        # The token that failed is not shut out: with a record of its own it registers.
+        own = SAVED.replace('"0876cf1e"', '"dddddddd"')
+        self.assertEqual(self.call("upload", token=OTHER, body=own.encode())[0], 200)
+        self.assertEqual([row[0] for row in self.labels()], ["self-0876cf1e", "self-dddddddd"])
+
+    def test_what_is_refused_registers_nothing(self):
+        for token, body in ((TOKEN, b"RookieLedgerDB = os.execute('x')"), (TOKEN, SAVED.replace('["v"] = 1', '["v"] = 2').encode()),
+                            ("not a token", SAVED.encode()), (TOKEN.upper(), SAVED.encode())):
+            self.assertIn(self.call("upload", token=token, body=body)[0], (400, 401), token)
+        self.assertEqual(self.labels(), [])
+
+    def test_a_revoked_token_stays_out(self):
+        self.assertEqual(self.call("upload", body=SAVED.encode())[0], 200)
+        con = lc.connect(self.db)
+        self.assertEqual(lc.revoke_token(con, "0876cf1e"), 1)   # by record id: the keeper never saw the token
+        self.assertEqual(lc.current_records(con), {})
+        con.close()
+        self.assertEqual(self.call("status")[0], 401)
+        self.assertEqual(self.call("upload", body=SAVED.replace('["rev"] = 7', '["rev"] = 8').encode())[0], 401)
+        self.assertEqual(self.labels(), [("self-0876cf1e", "0876cf1e", 0)])
+
+    def test_new_tokens_are_limited(self):
+        with mock.patch.object(ledger_ingest, "MAX_SELF_PER_DAY", 1):
+            self.assertEqual(self.call("upload", body=SAVED.encode())[0], 200)
+            other = SAVED.replace('"0876cf1e"', '"dddddddd"').encode()
+            status, body = self.call("upload", token=OTHER, body=other)
+            self.assertEqual(status, 429, body)
+            self.assertEqual(len(self.labels()), 1)
+            # A token the keeper registers by hand is not held to that number, nor is one already in.
+            self.register(OTHER, "B")
+            self.assertEqual(self.call("upload", token=OTHER, body=other)[0], 200)
+            self.assertEqual(self.call("upload", body=SAVED.replace('["rev"] = 7', '["rev"] = 8').encode())[0], 200)
+        with mock.patch.object(ledger_ingest, "MAX_UNKNOWN_PER_MINUTE", 0):
+            third = "11112222333344445555666677778888"
+            self.assertEqual(self.call("upload", token=third, body=SAVED.replace('"0876cf1e"', '"eeeeeeee"').encode())[0], 429)
+            self.assertEqual(self.call("upload", body=SAVED.replace('["rev"] = 7', '["rev"] = 9').encode())[0], 200)
+
+    def test_who_knocks_is_told_what_the_door_is_for(self):
+        for path, token in (("upload", "not a token"), ("nowhere", TOKEN)):
+            status, body = self.call(path, token=token)
+            self.assertIn("does not authorise", json.loads(body)["notice"], path)
+
+    def test_a_site_is_closed_unless_asked(self):
+        with self.assertRaises(ValueError):
+            ledger_ingest.Server(("127.0.0.1", 0), self.db, "public")
+        closed = ledger_ingest.Server(("127.0.0.1", 0), self.db)
+        self.addCleanup(closed.server_close)
+        self.assertIsNone(closed.tokens.known(OTHER))
+
+
+class Trust(unittest.TestCase):
+    """What a token that registered itself has to show before its record counts."""
+    NOW = 1795000000
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.con = lc.connect(self.dir / "ledger.sqlite")
+        self.addCleanup(self.con.close)
+
+    def record(self, corpses, active, rev=1, began=None):
+        return {"rev": rev, "t": self.NOW, "b": 1, "f": self.NOW - 30 * 86400 if began is None else began, "a": active,
+                "c": {}, "s": {}, "d": {}, "g": {}, "q": {}, "m": {"299": {"n": corpses, "cn": 0, "c": 0, "i": {}, "p": {}}}}
+
+    def upload(self, record, now, digest="d1", origin="0876cf1e"):
+        if not self.con.execute("SELECT 1 FROM ledger_tokens WHERE token_hash = ?", (digest,)).fetchone():
+            lc.self_register(self.con, digest, origin, 50)
+            self.con.execute("UPDATE ledger_tokens SET added_at = ? WHERE token_hash = ?", (lc.now_iso(now), digest))
+        lc.store_upload(self.con, digest, origin, record, now)
+        return self.con.execute("SELECT held FROM ledger_tokens WHERE token_hash = ?", (digest,)).fetchone()[0]
+
+    def test_a_first_upload_is_held_to_its_own_account(self):
+        week = self.record(9000, 30 * 3600)   # a week of play before finding the app: 300 corpses an hour
+        self.assertIsNone(lc.doubt(week, now=self.NOW))
+        self.assertIn("things recorded", lc.doubt(self.record(100000, 30 * 3600), now=self.NOW))
+        self.assertIn("before its first upload", lc.doubt(self.record(10, 101 * 3600), now=self.NOW))
+        self.assertIn("hours of play in", lc.doubt(self.record(10, 30 * 3600, began=self.NOW - 3600), now=self.NOW))
+        self.assertIn("before v0.6.0", lc.doubt({**week, "f": 0, "a": 0}, now=self.NOW))
+        self.assertEqual(lc.events({**week, "s": {"1:1:0": [5, 2]}, "g": {"1": {"n": 3}}, "d": {"2": {"n": 2}}}), 9010)
+
+    def test_probation_then_it_counts(self):
+        self.assertIsNone(self.upload(self.record(9000, 30 * 3600), self.NOW))
+        self.assertEqual(lc.current_records(self.con, self.NOW + lc.PROBATION - 60), {})
+        self.assertEqual(sorted(lc.current_records(self.con, self.NOW + lc.PROBATION + 60)), ["0876cf1e"])
+        # A token the keeper registered is believed at once.
+        lc.add_token(self.con, OTHER, "B")
+        lc.store_upload(self.con, lc.token_hash(OTHER), "dddddddd", self.record(10**6, 0), self.NOW)
+        self.assertEqual(sorted(lc.current_records(self.con, self.NOW)), ["dddddddd"])
+
+    def test_after_the_first_upload_the_site_has_its_own_clock(self):
+        self.assertIsNone(self.upload(self.record(1000, 10 * 3600), self.NOW))
+        # Two hours later: two more hours of play at most, whatever the file says.
+        self.assertIsNone(self.upload(self.record(1500, 12 * 3600, rev=2), self.NOW + 2 * 3600))
+        held = self.upload(self.record(1600, 40 * 3600, rev=3), self.NOW + 3 * 3600)
+        self.assertIn("hours of play in 1.0 hours", held)
+        self.assertEqual(lc.current_records(self.con, self.NOW + 10 * 86400), {})
+        # The record is kept all the same, for the keeper to look at, and stays held whatever comes next.
+        self.assertEqual(self.con.execute("SELECT rev FROM ledger_records").fetchall(), [(3,)])
+        self.assertEqual(self.upload(self.record(1601, 40 * 3600 + 60, rev=4), self.NOW + 4 * 3600), held)
+        line, = lc.digest(self.con, now=self.NOW + 10 * 86400)
+        self.assertTrue(line.startswith("self-0876cf1e: registered") and "HELD: " + held in line, line)
+        self.assertIn("1601 things recorded, 0 places, 40.0 hours of play, 40 an hour", line)
+        self.assertEqual(lc.approve_token(self.con, "0876cf1e"), 1)
+        self.assertEqual(sorted(lc.current_records(self.con, self.NOW)), ["0876cf1e"])
+        self.assertIsNone(self.upload(self.record(10**6, 40 * 3600 + 120, rev=5), self.NOW + 5 * 3600), "approved: believed")
+
+    def test_too_much_too_fast_is_held(self):
+        self.assertIsNone(self.upload(self.record(100, 3600), self.NOW))
+        self.assertIn("things recorded in 60 minutes", self.upload(self.record(5000, 2 * 3600, rev=2), self.NOW + 86400))
+        other = self.upload({**self.record(5, 600), "f": 0, "a": 0}, self.NOW, "d2", "dddddddd")
+        self.assertIn("before v0.6.0", other)
+        self.assertEqual(len(lc.digest(self.con, now=self.NOW + 30 * 86400)), 2, "held tokens stay in the digest")
+        self.assertEqual(lc.revoke_token(self.con, "dddddddd"), 1)
+        self.assertEqual(len(lc.digest(self.con, now=self.NOW + 30 * 86400)), 1)
+
+    def test_a_database_of_before_is_brought_up_to_date(self):
+        old = self.dir / "old.sqlite"
+        con = sqlite3.connect(old)
+        con.execute("CREATE TABLE ledger_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, added_at TEXT NOT NULL, "
+                    "revoked_at TEXT, last_upload TEXT, origin TEXT)")
+        con.execute("INSERT INTO ledger_tokens VALUES ('h', 'A', '2026-01-01T00:00:00+00:00', NULL, NULL, NULL)")
+        con.commit()
+        con.close()
+        con = lc.connect(old)
+        lc.store_upload(con, "h", "0876cf1e", self.record(10, 0), self.NOW)
+        self.assertEqual(sorted(lc.current_records(con, self.NOW)), ["0876cf1e"])
+        con.close()
 
 
 # Skipped only on a developer's machine without lua5.1: in CI a missing lua5.1 is an error, not a green run without
@@ -430,7 +603,8 @@ class Addon(unittest.TestCase):
             self.assertEqual(own["g"]["1731"]["m"]["2835"], [1, 1])
             self.assertEqual(own["g"]["1731"]["p"]["1429:600:200"], 1)
             self.assertEqual(own["m"]["299"], {"n": 4, "cn": 4, "c": 370,
-                                               "i": {"2589": [5, 3], "771": [1, 1], "4306": [1, 1]}})
+                                               "i": {"2589": [5, 3], "771": [1, 1], "4306": [1, 1]},
+                                               "p": {"1429:500:500": 4}})
             self.assertEqual((own["m"]["118"]["n"], own["m"]["118"]["cn"], own["m"]["118"]["c"]), (3, 1, 50))
             self.assertEqual(own["q"], {"5000:2858": {"q": 367, "j": 2, "n": 3, "k": 1, "t": 2}})
 

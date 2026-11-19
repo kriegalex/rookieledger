@@ -2,16 +2,28 @@
 """Tokens and contents of the RookieLedger database (data/ledger.sqlite, see server/ledger_common.py).
 
   python3 -I server/ledger_admin.py add <token> "<who>"    register the token a member read off /ledger token
-  python3 -I server/ledger_admin.py revoke <token | who>   stop accepting it; its uploads no longer count
+  python3 -I server/ledger_admin.py revoke <token | who | record id>   stop accepting it; its uploads no longer
+                                                           count. On a site with open registration it is also the
+                                                           way to shut a token out: it cannot register again
   python3 -I server/ledger_admin.py unbind <token | who>   let it upload a new record id (a member's saved file was lost)
   python3 -I server/ledger_admin.py list                   registered tokens and when each last uploaded
+  python3 -I server/ledger_admin.py digest [hours]         on a site with open registration: the tokens that
+                                                           registered themselves in the last hours (24) and those
+                                                           held, with how much each recorded in how much play
+  python3 -I server/ledger_admin.py approve <who | record id>   believe a token that registered itself: its record
+                                                           counts at once, held or not
   python3 -I server/ledger_admin.py purge                  delete the copies of other members' records that versions
                                                            with guild sync uploaded; nothing reads them
   python3 -I server/ledger_admin.py summary                what the records say: thresholds, skill-ups, disenchants,
                                                            gathering yields and places, corpses looted per creature,
                                                            quest items
+  python3 -I server/ledger_admin.py api-key add "<program>"     make a key of the read API for one program; it is
+                                                                shown once
+  python3 -I server/ledger_admin.py api-key revoke "<program>"  stop accepting that program's keys
+  python3 -I server/ledger_admin.py api-key list                the programs that have a key
 
-The upload endpoint notices a new or revoked token within 15 seconds; nothing needs restarting.
+The upload endpoint notices a new or revoked token within 15 seconds, the read API a key; nothing needs restarting.
+A key only matters while the read API runs with `--auth key`; without it the API answers everyone.
 """
 import argparse, sys
 from pathlib import Path
@@ -72,12 +84,28 @@ def main():
     add.add_argument("label")
     sub.add_parser("revoke").add_argument("token_or_label")
     sub.add_parser("unbind").add_argument("token_or_label")
+    sub.add_parser("approve").add_argument("label_or_origin")
+    sub.add_parser("digest").add_argument("hours", nargs="?", type=float, default=24)
     sub.add_parser("list")
     sub.add_parser("purge")
     sub.add_parser("summary")
+    key = sub.add_parser("api-key")
+    key.add_argument("action", choices=("add", "revoke", "list"))
+    key.add_argument("label", nargs="?")
     args = ap.parse_args()
     con = lc.connect(args.db)
-    if args.command == "add":
+    if args.command == "api-key":
+        if args.action == "list":
+            for label, added, revoked in con.execute("SELECT label, added_at, revoked_at FROM api_keys ORDER BY added_at"):
+                print(f"{label}: added {added}" + (f", revoked {revoked}" if revoked else ""))
+        elif not args.label:
+            sys.exit("name the program the key is for")
+        elif args.action == "add":
+            print(lc.add_api_key(con, args.label))
+            print(f"this is the only time the key of {args.label} is shown", file=sys.stderr)
+        else:
+            print(f"revoked {lc.revoke_api_key(con, args.label)} key(s)")
+    elif args.command == "add":
         try:
             lc.add_token(con, args.token.strip().lower(), args.label)
         except lc.LedgerError as error:
@@ -85,14 +113,19 @@ def main():
         print(f"registered {args.label}")
     elif args.command == "revoke":
         print(f"revoked {lc.revoke_token(con, args.token_or_label)} token(s)")
+    elif args.command == "approve":
+        print(f"approved {lc.approve_token(con, args.label_or_origin)} token(s)")
+    elif args.command == "digest":
+        print("\n".join(lc.digest(con, args.hours)) or "no token registered itself and none is held")
     elif args.command == "unbind":
         print(f"unbound {lc.unbind_token(con, args.token_or_label)} token(s)")
     elif args.command == "purge":
         print(f"deleted {lc.purge_relayed(con)} relayed record(s)")
     elif args.command == "list":
         for label, added, revoked, last, origin in con.execute(
-                "SELECT label, added_at, revoked_at, last_upload, origin FROM ledger_tokens ORDER BY added_at"):
-            state = f"revoked {revoked}" if revoked else f"last upload {last or 'never'}"
+                "SELECT label, added_at, COALESCE(revoked_at, 'held: ' || held), last_upload, origin "
+                "FROM ledger_tokens ORDER BY added_at"):
+            state = (revoked if revoked.startswith("held") else f"revoked {revoked}") if revoked else f"last upload {last or 'never'}"
             print(f"{label}: added {added}, {state}, record {origin or '-'}")
     else:
         summary(con)

@@ -159,6 +159,19 @@ After a quest item is looted, within 0.6 to 0.7 s of its window:
 - The objective's `numFulfilled` has gone up by then, and `finished` turns `true` on the last one, with a further
   `UI_INFO_MESSAGE` of type 314.
 
+## 9. Where a monster is
+
+The client tells an addon where the player stands, not where a monster does. Asked once, with a monster as the
+target, in the open world:
+
+| Asked | Answer |
+|---|---|
+| `UnitPosition("target")` | `nil, nil, nil, 0` |
+| `C_Map.GetPlayerMapPosition(map, "target")` | `nil` |
+
+So the place the addon notes for a looted corpse is the player's own, taken when the loot window opens: within
+looting reach of where the monster died. Where it stood before it was pulled cannot be read.
+
 ## Not verified
 
 Read elsewhere, not tried:

@@ -1,6 +1,7 @@
 -- Record.lua: one account's observations.
 --
--- A record is { rev, t, b, c, s, d, g, m, q }: a change counter, the time and game build of the last change, and
+-- A record is { rev, t, b, f, a, c, s, d, g, m, q }: a change counter, the time and game build of the last change,
+-- the time of the first change (f) and the seconds of play the changes took (a, see ns.Touch), and
 --   c[recipe] = { profession, lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3 }
 --       the lowest and highest skill at which the recipe showed each colour (0 orange, 1 yellow, 2 green, 3 grey;
 --       0 = never seen in that colour)
@@ -11,8 +12,11 @@
 --               p = { ["map:x:y"] = gathers there } }
 --       node is the game's id of the vein or herb, map its map id, x and y the place on that map in thousandths
 --   m[creature] = { n = corpses looted, cn = those whose coin is known, c = their coin in copper,
---                   i = { [item] = { quantity, corpses that held it } } }
---       creature is the game's id of the kind of monster
+--                   i = { [item] = { quantity, corpses that held it } },
+--                   p = { ["map:x:y"] = corpses looted there } }
+--       creature is the game's id of the kind of monster. A place is the cell of the map the player stood in when
+--       looting: x and y in thousandths as for a node, but in steps of CELL, since a monster walks and a vein does
+--       not. p is missing in an entry written before places were noted.
 --   q["creature:item"] = { q = quest, j = objective, n = chances, k = drops, t = quantity }
 --       a quest item, which only drops for who has the quest: n counts the corpses of that kind of monster looted
 --       while objective j of the quest was still open, k those that held the item, t how many of it they held.
@@ -25,13 +29,15 @@ local _, ns = ...
 local Record = {}
 ns.Record = Record
 
-local MAX_PLACES = 2000   -- per kind of node: past that, gathers still count but no new place is noted
+local MAX_PLACES = 2000   -- per kind of node or creature: past that, gathers and corpses still count but no new
+                          -- place is noted
 local NEAR = 8            -- thousandths of a map: two gathers this close are the same vein or herb
 local MAX_ITEMS = 5000    -- per kind of creature
+local CELL = 5            -- thousandths of a map: the side of the cell a looted corpse is placed in
 local MAX_QUEST_ITEMS = 5000
 
 function Record.New()
-    return { rev = 0, t = 0, b = 0, c = {}, s = {}, d = {}, g = {}, m = {}, q = {} }
+    return { rev = 0, t = 0, b = 0, f = 0, a = 0, c = {}, s = {}, d = {}, g = {}, m = {}, q = {} }
 end
 
 -- Notes that recipe showed colour at skill. True when that widened a range.
@@ -135,8 +141,8 @@ function Record.Gather(rec, node, kind, loot, map, x, y)
 end
 
 -- One looted corpse. copper: its coin, or nil when the loot window did not let us tell which corpse held how much;
--- loot: { [item id] = quantity }.
-function Record.Corpse(rec, creature, copper, loot)
+-- loot: { [item id] = quantity }; map, x, y: where the player stood (x, y in thousandths), or nil.
+function Record.Corpse(rec, creature, copper, loot, map, x, y)
     local entry = rec.m[creature]
     if not entry then
         entry = { n = 0, cn = 0, c = 0, i = {} }
@@ -148,6 +154,20 @@ function Record.Corpse(rec, creature, copper, loot)
         entry.c = entry.c + copper
     end
     AddLoot(entry.i, loot, MAX_ITEMS)
+    if not map then
+        return
+    end
+    entry.p = entry.p or {}
+    local key = map .. ":" .. math.floor(x / CELL + 0.5) * CELL .. ":" .. math.floor(y / CELL + 0.5) * CELL
+    local places = 0
+    if not entry.p[key] then
+        for _ in pairs(entry.p) do
+            places = places + 1
+        end
+    end
+    if places < MAX_PLACES then
+        entry.p[key] = (entry.p[key] or 0) + 1
+    end
 end
 
 -- Notes that creature drops item for objective `objective` of quest. Returns the entry to count chances in, or nil

@@ -16,6 +16,7 @@ local ROWS = { { "c", "rowC" }, { "s", "rowS" }, { "d", "rowD" }, { "g", "rowG" 
 
 local window, cells, messages   -- the window, its { [kind] = { session, total } } figures and its log
 local dbicon, minimapCheck
+local optionsCategory, optionsPanel   -- the options page as the game knows it: one or the other, by client
 local tooltipCheck, showFrom   -- the options page's tooltip switch, and what sets its quality control to the setting
 
 -- Runs f. An error stops f alone; a copy of the repository says what it was.
@@ -204,6 +205,26 @@ local function Library(name)
     return ok and library or nil
 end
 
+-- How this client opens an addon's options page, or nil when it has no way an addon may use.
+local function OptionsOpener()
+    if optionsCategory and Settings and Settings.OpenToCategory then
+        local id = type(optionsCategory) == "table" and optionsCategory.GetID and optionsCategory:GetID() or optionsCategory
+        return function() Settings.OpenToCategory(id) end
+    elseif optionsPanel and InterfaceOptionsFrame_OpenToCategory then
+        -- Twice: the first call of a session opens the options on their first page.
+        return function()
+            InterfaceOptionsFrame_OpenToCategory(optionsPanel)
+            InterfaceOptionsFrame_OpenToCategory(optionsPanel)
+        end
+    end
+end
+
+-- The game refuses to open its options from an addon during a fight: Guard keeps that to itself.
+function UI.OpenOptions()
+    local open = OptionsOpener()
+    return open and Guard(open) or false
+end
+
 local function Tooltip(tip)
     local totals, session = ns.Totals(), ns.session
     tip:AddDoubleLine("RookieLedger", ns.version, 0.9, 0.7, 0.13, 0.6, 0.6, 0.6)
@@ -213,7 +234,9 @@ local function Tooltip(tip)
     end
     tip:AddLine(" ")
     tip:AddLine(L.hintLeft, 0.6, 0.6, 0.6)
-    tip:AddLine(L.hintRight, 0.6, 0.6, 0.6)
+    if OptionsOpener() then
+        tip:AddLine(L.hintRight, 0.6, 0.6, 0.6)
+    end
 end
 
 -- Through LibDataBroker and LibDBIcon, as most addons do: addons that gather the minimap's buttons find it, and
@@ -229,7 +252,9 @@ local function MinimapButton()
         icon = ICON,
         OnClick = function(_, button)
             if button == "RightButton" then
-                Guard(ns.Command, "token")
+                -- Not the token: it is the key to the member's record, and a site open to all never asks for it.
+                -- /ledger token still shows it.
+                UI.OpenOptions()
             else
                 UI.Toggle()
             end
@@ -345,9 +370,11 @@ local function Options()
     Guard(TooltipOptions, panel, minimapCheck or open)
 
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
-        Settings.RegisterAddOnCategory(Settings.RegisterCanvasLayoutCategory(panel, panel.name))
+        optionsCategory = Settings.RegisterCanvasLayoutCategory(panel, panel.name)
+        Settings.RegisterAddOnCategory(optionsCategory)
     elseif InterfaceOptions_AddCategory then
         InterfaceOptions_AddCategory(panel)
+        optionsPanel = panel
     end
 end
 

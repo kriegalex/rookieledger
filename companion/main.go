@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	defaultURL      = "https://auctionator-ledger.21crypto.ch/api/ledger/v1"
+	defaultURL      = "https://rookieledger-api.21crypto.ch/v1/ledger"
 	flavor          = "_forever_"
 	savedFile       = "RookieLedger.lua"
 	pollEvery       = 60 * time.Second
@@ -223,7 +223,7 @@ func (s *syncer) registered(token string) bool {
 		log.Printf("token %s… is registered", token[:6])
 	case code == http.StatusUnauthorized:
 		// Never the whole token: this log is what a member pastes when asking why nothing uploads.
-		log.Printf("token %s… not registered yet: /ledger token in game shows it, to give to the guild's ledger keeper", token[:6])
+		log.Printf("token %s… not accepted yet: if the site registers tokens by hand, /ledger token in game shows it, to give to the guild's ledger keeper", token[:6])
 	default:
 		log.Printf("unexpected answer %d to the status check", code)
 	}

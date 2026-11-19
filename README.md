@@ -19,7 +19,8 @@ Only numbers the game client shows you:
 - per disenchanted item: its quality, class and item level, and the materials received;
 - per kind of vein or herb you gathered: how often, the materials received, and the places (map and position on it)
   where you gathered it;
-- per kind of monster you looted alone: how many corpses, their coin, and every item they held (quest items left out);
+- per kind of monster you looted alone: how many corpses, their coin, every item they held (quest items left out),
+  and the places (map and position on it, to half a hundredth of the map) where you looted them;
 - per quest item a kind of monster gave you: the quest and the objective that asked for it, how many corpses of that
   monster you looted while the quest still wanted the item, and how many of them held it.
 
@@ -28,8 +29,9 @@ the quest wanted it, not against all of them. The addon learns which quest that 
 time the item shows in a corpse; that first corpse is not counted, so that the drop that made the item known does
 not raise its rate. Of your quests, the record holds only the number of a quest that asked for such an item.
 
-No character name, account name, realm, guild name, chat, gold total or inventory is recorded, and no time other
-than that of the record's last change. A record is named by a random 8-digit id made on first login. A record only
+No character name, account name, realm, guild name, chat, gold total or inventory is recorded. Of time, the record
+holds three numbers: when it began, when it last changed, and how many seconds of play its changes took. A site
+that takes uploads from anyone uses them to tell a record that was played from one that was made up. A record is named by a random 8-digit id made on first login. A record only
 grows: a skill range widens, a count goes up.
 
 Beside the record, the addon keeps one small file per character that never leaves your computer. The companion app
@@ -42,8 +44,9 @@ does not read it. It holds:
   pointing at;
 - where you left the window and the minimap button, and your settings for the monster tooltip.
 
-Gathering places are positions you stood at. They are in your saved file and, if you use the companion app, on your
-guild's site, where the guild's ledger keeper can read them.
+Gathering and looting places are positions you stood at. They are in your saved file and, if you use the companion
+app, on your guild's site. A site that runs the read API gives them out added up over all members, to whoever may read that API,
+with no word of who stood where; while few members upload, a total is close to what one of them did.
 
 ## The addon
 
@@ -56,10 +59,10 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 | `/ledger show` | Opens or closes the window |
 | `/ledger minimap` | Hides the minimap button or brings it back |
 | `/ledger tooltip` | Switches the loot lines in monster tooltips off or on |
-| `/ledger token` | Shows your upload token, to give to your guild's ledger keeper |
+| `/ledger token` | Shows your upload token, for a guild site that registers tokens by hand |
 
 The window lists the last 50 things recorded (the monster or the vein, the items as links, the coin) and the counts
-of this session and in total. The minimap button opens it with a left click and shows your token with a right click;
+of this session and in total. The minimap button opens it with a left click and the addon's options with a right click;
 its tooltip gives the counts. The window can also be opened from the game's AddOns options.
 
 Pointing at a monster shows, under its tooltip, what that kind of monster gave you so far: how many you looted, each
@@ -88,8 +91,9 @@ that file and uploads it.
    to start with your session and runs in the background, so the downloaded file can be deleted. To update, download
    the new version and double-click it.
    Linux: `chmod +x rookieledger-sync-linux-amd64 && ./rookieledger-sync-linux-amd64 --install` (a systemd user unit).
-3. In game, type `/ledger token` and give the token to your guild's ledger keeper. Uploads start once the keeper has
-   registered it.
+3. Play. On a site open to all, such as the one this addon was written for, uploads start by themselves after your
+   next game session. On a site that registers tokens by hand, type `/ledger token` in game and give the token to
+   your guild's ledger keeper; uploads start once the keeper has registered it.
 
 **Windows warning.** The app is not code-signed, so Windows shows "Windows protected your PC" on first run: choose
 *More info*, then *Run anyway*. The binaries are built by GitHub Actions from the tagged source of this repository;
@@ -114,17 +118,19 @@ block unsigned programs with no bypass.
   deeper, is not read.
 - It reads no other file, sends no telemetry and does not update itself.
 
-The token is the only credential. Give it to the ledger keeper and to nobody else; to stop uploading, run
-`--uninstall`, or ask the keeper to revoke the token. The app's log shows only the first six digits of a token.
+The token is the only credential: it is what ties your record to you. Give it to nobody, except to the ledger
+keeper of a site that registers tokens by hand; to stop uploading, run `--uninstall`, or ask the keeper to revoke
+the token. The app's log shows only the first six digits of a token.
 
 ## Running a site for your own guild
 
-`server/` is the whole upload service: Python 3.12 standard library, one SQLite file.
+`server/` is the whole site: an upload service and a read API, Python 3.12 standard library, one SQLite file.
 
 ```sh
 python3 -I server/ledger_ingest.py --port 8787 --db data/ledger.sqlite   # behind a TLS reverse proxy
 python3 -I server/ledger_admin.py add <token> "<who>"                   # register a member's token
-python3 -I server/ledger_admin.py list | revoke <token or who> | unbind <token or who> | summary | purge
+python3 -I server/ledger_admin.py list | revoke <token, who or record id> | unbind <token or who> | summary | purge
+python3 -I server/ledger_admin.py digest [hours] | approve <who or record id>   # for a site with open registration
 ```
 
 A site running an older `server/` keeps accepting uploads from a newer addon: what it does not know of a record
@@ -132,11 +138,98 @@ A site running an older `server/` keeps accepting uploads from a newer addon: wh
 
 An unknown token is refused before the request body is read. A token is tied to the record id of its first upload,
 so a member cannot upload under another member's id; `unbind` lifts the tie for a member whose saved file was lost.
-Members point the companion app at your site once: `--url https://<your site>/api/ledger/v1`.
+
+A site can instead take uploads from anyone who has the addon and the app, with no token to hand over:
+
+```sh
+python3 -I server/ledger_ingest.py --port 8787 --db data/ledger.sqlite --registration open   # or LEDGER_REGISTRATION=open
+```
+
+A token the site never saw then registers itself with its first upload that passes the checks, under the label
+`self-<record id>`; the app needs no setting for it. The token remains the secret that ties a record to who made
+it, and `revoke <record id>` shuts one out for good. What an open site gives up:
+
+- it reads up to 1 MiB from a stranger before knowing them, at most 30 such uploads a minute, and lets 50 tokens
+  register per day;
+- it cannot know that a record was played. Nothing in the game signs what an addon writes, and a saved file is
+  text anyone can edit. One invented record could bend every total the read API gives out.
+
+So a token that registered itself is not taken at its word:
+
+- **Probation.** Its record is kept at once but counts in nothing the site gives out for 48 hours.
+- **Pace.** The record says when it began and how many seconds of play it took. At its first upload it is held to
+  that account: at most 100 hours of play, no more than the time since it began, and at most 1200 things recorded
+  (corpses, gathers, crafts, disenchants) per hour of play, plus 200. From the second upload on the site has its
+  own clock: the play added cannot exceed the time between the two uploads. A record that fails is still kept,
+  but its token is held: it counts for nothing until you approve it. The uploader is not told.
+- **You decide.** `digest` lists the tokens that registered in the last 24 hours and every held one, with how much
+  each recorded in how much play. `approve <record id>` believes one, at once and for good; `revoke <record id>`
+  shuts one out. Run `digest` daily and send its output where you will read it.
+
+```sh
+python3 -I server/ledger_admin.py digest            # or: digest 72, for the last three days
+python3 -I server/ledger_admin.py approve 0876cf1e
+```
+
+These numbers are wide on purpose and are constants at the top of `server/ledger_common.py`: narrow them once real
+records show what play looks like. A record from an addon before v0.6.0 has no account of its time, so a token
+that registers itself with one is held until approved. Tokens you registered by hand are believed as before.
+
+Who knocks at the upload door without a member's token is answered with a notice of what the door is for, and
+that generating data for it is not authorised. It keeps no one out; it tells an honest program, an AI agent
+included, to stop.
+Members point the companion app at your site once: `--url https://<your site>/v1/ledger`.
 
 A database that received uploads from versions with guild sync (before v0.2.0) still holds the copies of other
 members' records those versions sent along. Nothing reads them; `purge` deletes them. Copy the SQLite file first:
 a purge cannot be undone.
+
+### The read API
+
+`server/ledger_api.py` gives out what the records say together, as JSON, for a map page, a market site or any other
+program. It opens the database read-only and is a process of its own, so that reading cannot touch what uploads
+write. Both can answer under one name: the upload service has everything below `/v1/ledger/`, the read API the
+rest of `/v1`, and the reverse proxy sends each path to its process.
+
+```sh
+python3 -I server/ledger_api.py --port 8788 --db data/ledger.sqlite    # behind a TLS reverse proxy
+curl http://localhost:8788/v1                                          # what it holds, and where
+curl http://localhost:8788/v1/openapi.json                             # the contract, as OpenAPI 3.1
+```
+
+| Path | What it answers |
+| --- | --- |
+| `/v1/creatures`, `/v1/creatures/{id}`, `/v1/creatures/{id}/places` | per kind of monster: corpses, coin, what they held, quest items, and where it was looted |
+| `/v1/items`, `/v1/items/{id}` | per item: the monsters, veins, herbs and disenchants that gave it |
+| `/v1/nodes`, `/v1/nodes/{id}`, `/v1/nodes/{id}/places` | per kind of vein or herb: what it gave, and where it was gathered |
+| `/v1/maps`, `/v1/maps/{id}`, `/v1/maps/{id}/node-places`, `/v1/maps/{id}/creature-places` | everything placed on one map: what a map page loads |
+| `/v1/recipes`, `/v1/recipes/{id}` | the skill at which a recipe's colour turns, and skill points per craft |
+| `/v1/disenchants` | what disenchanting gave, per quality, class and item level |
+
+- It serves totals over all records. No record id, token or time of play is in any answer.
+- A monster's place is where a player stood when looting it: where it died, which for a monster pulled away is
+  not where it lives. Monsters looted before v0.6.0 of the addon have no place.
+- Everything is named by the game's ids. The records hold no names, so the API has none to give.
+- A collection answers `{"data": [...], "next_cursor": ...}`, 100 rows unless `limit` says otherwise (1000 at most);
+  pass `next_cursor` back as `cursor` for the rest. Filters are query names (`/v1/creatures?item=2589`); a name the
+  API does not know is refused, not ignored.
+- Errors are problem documents (RFC 9457). Answers carry an `ETag` and may be cached for a minute; any origin may
+  read them from a browser.
+- Within `/v1` fields are only ever added. A change that would break a client gets a new prefix.
+- New uploads show within 15 seconds.
+
+It answers everyone unless started with `--auth key` (or with `LEDGER_API_AUTH=key` in its environment, which is the
+switch for a deployment). Then every request needs `Authorization: Bearer <key>`:
+
+```sh
+python3 -I server/ledger_admin.py api-key add "map page"     # prints the key once; only its hash is kept
+python3 -I server/ledger_admin.py api-key revoke "map page"
+python3 -I server/ledger_admin.py api-key list
+```
+
+One key per program, so that a program can be counted, limited or shut out alone. A key that a web page carries can
+be read by its visitors: it tells programs apart, it does not keep the data secret. `/healthz` and the OpenAPI
+document stay open. The service limits no one's rate itself; do that in the reverse proxy.
 
 ## Development
 
@@ -155,7 +248,8 @@ kills, corpses and loot windows, with the number of cases behind each statement.
 addon takes a loot window for.
 
 A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/ledger_common.py` (`check_record`)
-and both tests together.
+and both tests together. What the read API serves is made in `server/ledger_api.py` from one table of routes, which
+is also what its OpenAPI document is written from; `tests/test_api.py` holds every answer against that document.
 
 Releases: push a tag such as `v0.2.0`. The workflow runs the tests above on the tagged commit, builds the companion
 binaries and checks that `CHANGELOG.md` starts with `# RookieLedger v0.2.0`; it publishes nothing if one of these
