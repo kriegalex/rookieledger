@@ -182,6 +182,49 @@ class Checks(unittest.TestCase):
                 lc.check_db(lc.parse_saved_variables(SAVED.replace(old, new)))
 
 
+QUEST_ITEMS = '["own"] = {\n["q"] = {\n["299:2858"] = {\n["q"] = 367,\n["j"] = 1,\n["n"] = 4,\n["k"] = 2,\n["t"] = 3,\n},\n},\n'
+
+
+class QuestItems(unittest.TestCase):
+    def saved(self, old=None, new=None):
+        text = SAVED.replace('["own"] = {\n', QUEST_ITEMS, 1)
+        self.assertIn('["299:2858"]', text)
+        if old:
+            self.assertIn(old, text)
+            text = text.replace(old, new)
+        return lc.check_db(lc.parse_saved_variables(text))[1]
+
+    def test_quest_items_are_kept_and_read(self):
+        own = self.saved()
+        self.assertEqual(own["q"], {"299:2858": {"q": 367, "j": 1, "n": 4, "k": 2, "t": 3}})
+        other = {"q": {"299:2858": {"q": 367, "j": 1, "n": 6, "k": 1, "t": 1}, "300:2859": {"q": 9, "j": 2, "n": 0, "k": 0, "t": 0}}}
+        older = {"c": {}, "s": {}}   # a record of a version without quest items
+        rates = lc.quest_item_rates({"a": own, "b": other, "c": older})
+        self.assertEqual(rates[(299, 2858)], {"quest": 367, "n": 10, "k": 3, "rate": 0.3, "each": 4 / 3})
+        self.assertEqual(rates[(300, 2859)], {"quest": 9, "n": 0, "k": 0, "rate": None, "each": None})
+        self.assertEqual(lc.check_db(lc.parse_saved_variables(SAVED))[1]["q"], {}, "a file without the section has none")
+
+    def test_the_summary_lists_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            con = lc.connect(Path(tmp) / "ledger.sqlite")
+            lc.add_token(con, TOKEN, "A")
+            lc.store_upload(con, lc.token_hash(TOKEN), "0876cf1e", self.saved())
+            out = io.StringIO()
+            ledger_admin.summary(con, out)
+            con.close()
+        self.assertIn("quest items (1 creature and item pairs)", out.getvalue())
+        self.assertIn("creature 299 item 2858 (quest 367): 2/4 = 50%", out.getvalue())
+
+    def test_refuses_bad_quest_items(self):
+        for old, new in (('["k"] = 2,\n["t"] = 3', '["k"] = 5,\n["t"] = 5'),      # more drops than chances
+                         ('["t"] = 3', '["t"] = 1'),                              # fewer items than drops
+                         ('["299:2858"]', '["Sombredogue:2858"]'),               # a key that is not numbers
+                         ('["j"] = 1', '["j"] = 0'),
+                         ('["q"] = 367', '["q"] = "Une Peste nouvelle"')):       # a quest by its name
+            with self.assertRaises(lc.LedgerError, msg=new):
+                self.saved(old, new)
+
+
 class Reading(unittest.TestCase):
     def test_thresholds_rates_and_yields(self):
         _, own = lc.check_db(lc.parse_saved_variables(SAVED))
@@ -282,6 +325,7 @@ class Endpoint(unittest.TestCase):
                       out.getvalue())
         self.assertIn("monster loot (1 kinds of creature, 4 corpses)", out.getvalue())
         self.assertIn("creature 299, 4 corpses, 185 copper each, 2 different items", out.getvalue())
+        self.assertIn("quest items (0 creature and item pairs)", out.getvalue())
         con.close()
 
     def test_a_revoked_token_no_longer_counts(self):
@@ -388,6 +432,7 @@ class Addon(unittest.TestCase):
             self.assertEqual(own["m"]["299"], {"n": 4, "cn": 4, "c": 370,
                                                "i": {"2589": [5, 3], "771": [1, 1], "4306": [1, 1]}})
             self.assertEqual((own["m"]["118"]["n"], own["m"]["118"]["cn"], own["m"]["118"]["c"]), (3, 1, 50))
+            self.assertEqual(own["q"], {"5000:2858": {"q": 367, "j": 2, "n": 3, "k": 1, "t": 2}})
 
 
 if __name__ == "__main__":

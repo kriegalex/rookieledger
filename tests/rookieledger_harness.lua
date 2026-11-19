@@ -45,7 +45,7 @@ end
 
 local function newClient(name)
     local c = { name = name, online = true, frames = {}, printed = {}, version = "@project-version@",
-        profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {}, texts = {}, named = {} }
+        profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {}, texts = {}, named = {}, quests = {} }
     local env = setmetatable({}, { __index = _G })
     c.env = env
     env.print = function(text) c.printed[#c.printed + 1] = text end
@@ -177,7 +177,8 @@ local function newClient(name)
     -- A loot slot is { item, quantity [, quest = true] [, from = { guid, quantity, ... }] } or { coin = "text", from = ... }.
     env.GetNumLootItems = function() return #c.loot end
     env.GetLootSlotLink = function(slot)
-        return c.loot[slot][1] and ("|Hitem:" .. c.loot[slot][1] .. "::|h[m]|h") or nil
+        local s = c.loot[slot]
+        return s[1] and ("|Hitem:" .. s[1] .. "::|h[" .. (s.name or "m") .. "]|h") or nil
     end
     env.GetLootSlotType = function(slot) return c.loot[slot].coin and 2 or 1 end
     env.GetLootSlotInfo = function(slot)
@@ -191,6 +192,19 @@ local function newClient(name)
         end
         return c.lootSource, c.lootSource and (s[2] or 1) or nil
     end
+    -- The quest log: c.quests = { { id, objectives = { { text, type, finished } } } }, after a header line.
+    env.C_QuestLog = {
+        GetNumQuestLogEntries = function() return #c.quests + 1 end,
+        GetInfo = function(index)
+            local quest = c.quests[index - 1]
+            return quest and { questID = quest.id, isHeader = false } or { isHeader = true }
+        end,
+        GetQuestObjectives = function(id)
+            for _, quest in ipairs(c.quests) do
+                if quest.id == id then return quest.objectives end
+            end
+        end,
+    }
     env.C_Spell = { GetSpellName = function(id)
         return ({ [2575] = "Minage", [2576] = "Minage", [2366] = "Cueillette", [3570] = "Cueillette", [585] = "Châtiment",
             [8613] = "Dépeçage", [8617] = "Dépeçage", [921] = "Vol à la tire" })[id]
@@ -441,7 +455,9 @@ A.target, A.targetName = nil, nil
 local wolf = own.m[299]
 local log = A.env.RookieLedgerLocal.log
 check("the log tells the corpse by the name of the target, its items as links and its coin", log[#log][2] == "m"
-    and log[#log][3] == "Loup : |Hitem:771::|h[m]|h, |Hitem:2589::|h[m]|h x2, 120 cuivre", log[#log][3])
+    and log[#log][3] == "Loup : |Hitem:771::|h[m]|h, |Hitem:2589::|h[m]|h x2, 120 cuivre, "
+    .. "|Hitem:9999::|h[m]|h (objet de quête)", log[#log][3])
+check("a quest item the log names is still not in the record", wolf.i[9999] == nil)
 check("a corpse: items of every quality and its coin, no quest item", wolf and wolf.n == 1 and wolf.cn == 1 and wolf.c == 120
     and wolf.i[2589][1] == 2 and wolf.i[2589][2] == 1 and wolf.i[771][1] == 1 and wolf.i[9999] == nil)
 lootWindow({ { 771, 1 } })
@@ -671,6 +687,63 @@ for _, line in ipairs(A.printed) do
     failure = failure or (line:find("%.lua:%d") and line)
 end
 check("no part of the interface failed", not failure, failure)
+
+-- Quest items ------------------------------------------------------------------
+-- A quest item drops only for who has the quest: it is counted against the corpses looted while the quest wanted it.
+
+local blood = { 2858, 1, quest = true, name = "Sang de sombredogue" }
+local hound = 0
+local function houndCorpse(slots)
+    hound = hound + 1
+    A.lootSource = corpse(5000, ("00000020%02d"):format(hound))
+    lootWindow(slots)
+    A.lootSource = nil
+end
+local function wants(text, finished) return { text = text, type = "item", finished = finished or false } end
+local q = A.db.own.q
+houndCorpse({ blood, { 2589, 1 } })
+check("a quest item nobody asks for is not counted", next(q) == nil and A.db.own.m[5000].i[2858] == nil)
+-- The French client puts a no-break space before the colon; another objective starts with the same words.
+A.quests = {
+    { id = 300, objectives = { { text = "Loup tué : 0/8", type = "monster", finished = false } } },
+    { id = 367, objectives = { wants("Sang de sombredogue épais : 0/2"), wants("Sang de sombredogue\194\160: 1/5") } },
+}
+houndCorpse({ blood })
+local entry = q["5000:2858"]
+check("the first corpse that shows it tells which quest wants it, and is not counted itself", entry and entry.q == 367
+    and entry.j == 2 and entry.n == 0 and entry.k == 0 and entry.t == 0)
+houndCorpse({ { 2589, 1 } })
+check("a corpse without it is a chance missed", entry.n == 1 and entry.k == 0)
+houndCorpse({ { 2858, 2, quest = true, name = "Sang de sombredogue" }, { 2589, 1 } })
+check("a corpse with it is a chance taken", entry.n == 2 and entry.k == 1 and entry.t == 2
+    and A.db.own.m[5000].i[2858] == nil)
+local revBefore = A.db.own.rev
+A.lootSource = corpse(5000, ("00000020%02d"):format(hound))
+lootWindow({ blood })
+check("the same corpse opened again is no new chance", entry.n == 2 and A.db.own.rev == revBefore)
+A.load(A.db)
+entry = A.db.own.q["5000:2858"]
+houndCorpse({ { 2589, 1 } })
+check("the quest items known are counted on after a reload", entry.n == 3 and entry.k == 1)
+A.grouped = true
+houndCorpse({ blood })
+A.grouped = false
+check("nothing of it is counted in a group", entry.n == 3)
+A.quests[2].objectives[2].finished = true
+houndCorpse({ blood })
+houndCorpse({ { 2589, 1 } })
+check("once the objective is reached, corpses are chances no more", entry.n == 3 and entry.k == 1)
+A.quests = {}
+houndCorpse({ { 2589, 1 } })
+check("nor without the quest", entry.n == 3)
+-- Two objectives could be meant: the item is left alone.
+A.quests = { { id = 400, objectives = { wants("Griffe : 0/3") } }, { id = 401, objectives = { wants("Griffe: 1/4") } } }
+houndCorpse({ { 2859, 1, quest = true, name = "Griffe" } })
+check("an item two quests ask for by the same name is not tied to either", A.db.own.q["5000:2859"] == nil)
+A.quests = { { id = 402, objectives = { wants("Griffe putride : 0/7") } } }
+houndCorpse({ { 2859, 1, quest = true, name = "Griffe" } })
+check("a name that only starts another item's is not that item", A.db.own.q["5000:2859"] == nil)
+A.quests = {}
 
 -- Saved-variables layout -------------------------------------------------------
 

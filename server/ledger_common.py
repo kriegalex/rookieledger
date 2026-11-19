@@ -14,6 +14,8 @@ A record is one WoW account's observations, named by an 8-hex id (no character n
              p: {"map:x:y": gathers there}}   node: the game's id of the vein or herb; x, y in thousandths of the map
   m[creature] = {n: corpses looted, cn: those whose coin is known, c: their coin in copper,
                  i: {item: [quantity, corpses that held it]}}
+  q["creature:item"] = {q: quest, j: objective, n: chances, k: drops, t: quantity}   a quest item: the corpses of that
+                 kind of monster looted while objective j of the quest was open, those that held the item, how many
 An upload carries the uploader's own record and nothing else. `data/ledger.sqlite` keeps one row per record id and
 `current_records` returns the rows of tokens that are still valid. Counts are never added across uploads, so sending
 a file twice changes nothing. A token is tied to the record id of its first upload: it cannot upload another id, and
@@ -34,6 +36,7 @@ MAX_MAP = 100_000
 MAX_PLACES = 2000           # per kind of node, as in Record.lua
 MAX_ITEMS = 5000            # per kind of creature, as in Record.lua
 MAX_COPPER = 10**7          # per corpse: 1000 gold, far above anything a corpse holds
+MAX_OBJECTIVES = 50         # per quest
 MAX_DEPTH = 8
 MAX_VALUES = 1_000_000      # per file: the game spends 9 bytes or more on a value, so the 8 MiB an upload may hold stay
                             # under it, while 8 MiB of "0," would otherwise become 4 million table entries in memory
@@ -182,23 +185,24 @@ def _array(value, length):
 
 def check_record(raw):
     """The record as JSON-ready data, or LedgerError. A record only grows, so one with more than MAX_ENTRIES entries
-    is not refused (its author could never upload again): colours, then disenchants, gathered nodes, crafts and
-    creatures are kept up to that number, of each node MAX_PLACES places, of each creature MAX_ITEMS items, and
-    "skipped" says how many entries were left out."""
+    is not refused (its author could never upload again): colours, then disenchants, gathered nodes, crafts,
+    creatures and quest items are kept up to that number, of each node MAX_PLACES places, of each creature MAX_ITEMS
+    items, and "skipped" says how many entries were left out. A record of a version without quest items has none."""
     if not isinstance(raw, dict):
         raise LedgerError("record is not a table")
     colours, crafts, disenchants = raw.get("c") or {}, raw.get("s") or {}, raw.get("d") or {}
-    gathered, creatures = raw.get("g") or {}, raw.get("m") or {}
-    if not all(isinstance(t, dict) for t in (colours, crafts, disenchants, gathered, creatures)):
+    gathered, creatures, quest_items = raw.get("g") or {}, raw.get("m") or {}, raw.get("q") or {}
+    if not all(isinstance(t, dict) for t in (colours, crafts, disenchants, gathered, creatures, quest_items)):
         raise LedgerError("record sections are not tables")
-    skipped = max(0, len(colours) + len(crafts) + len(disenchants) + len(gathered) + len(creatures) - MAX_ENTRIES)
+    skipped = max(0, len(colours) + len(crafts) + len(disenchants) + len(gathered) + len(creatures) + len(quest_items)
+                  - MAX_ENTRIES)
     if skipped:
         keep = iter(range(MAX_ENTRIES))
-        colours, disenchants, gathered, crafts, creatures = (
+        colours, disenchants, gathered, crafts, creatures, quest_items = (
             {key: section[key] for key, _ in zip(section, keep)}
-            for section in (colours, disenchants, gathered, crafts, creatures))
+            for section in (colours, disenchants, gathered, crafts, creatures, quest_items))
     rec = {"rev": _int(raw.get("rev", 0), 0, MAX_REV), "t": _int(raw.get("t", 0), 0, 2**32 - 1),
-           "b": _int(raw.get("b", 0), 0, 10**9), "c": {}, "s": {}, "d": {}, "g": {}, "m": {}}
+           "b": _int(raw.get("b", 0), 0, 10**9), "c": {}, "s": {}, "d": {}, "g": {}, "m": {}, "q": {}}
     if skipped:
         rec["skipped"] = skipped
     for recipe, entry in colours.items():
@@ -267,6 +271,15 @@ def check_record(raw):
                 rec["skipped"] = rec.get("skipped", 0) + 1
         rec["m"][str(_int(creature, 1, MAX_ID))] = {"n": n, "cn": known, "c": _int(entry.get("c", 0), 0, known * MAX_COPPER),
                                                      "i": items}
+    for key, entry in quest_items.items():
+        m = re.fullmatch(r"(\d{1,7}):(\d{1,7})", key) if isinstance(key, str) else None
+        if not m or not isinstance(entry, dict):
+            raise LedgerError("bad quest item entry")
+        creature, item = _int(int(m.group(1)), 1, MAX_ID), _int(int(m.group(2)), 1, MAX_ID)
+        n = _int(entry.get("n"), 0, MAX_COUNT)
+        k = _int(entry.get("k"), 0, n)
+        rec["q"][f"{creature}:{item}"] = {"q": _int(entry.get("q"), 1, MAX_ID), "j": _int(entry.get("j"), 1, MAX_OBJECTIVES),
+                                          "n": n, "k": k, "t": _int(entry.get("t"), k, k * 1000)}
     return rec
 
 
@@ -488,3 +501,22 @@ def drop_rates(records):
     return {creature: {"n": a["n"], "coin": a["c"] / a["cn"] if a["cn"] else None,
                        "items": {item: (q / a["n"], t / a["n"]) for item, (q, t) in a["i"].items()}}
             for creature, a in acc.items()}
+
+
+def quest_item_rates(records):
+    """{(creature, item): {"quest", "n", "k", "rate", "each"}} over every record: of the n corpses of that kind of
+    monster looted while a quest wanted the item, k held it ("rate" = k / n, None before the first chance), "each" of
+    it on average. "quest" is the quest most records name. The corpse that first showed a member the item is in
+    neither count, so a rate is not raised by the drop that made it known."""
+    acc = {}
+    for rec in records.values():
+        for key, entry in rec.get("q", {}).items():
+            creature, item = (int(part) for part in key.split(":"))
+            a = acc.setdefault((creature, item), {"n": 0, "k": 0, "t": 0, "quests": {}})
+            a["n"] += entry["n"]
+            a["k"] += entry["k"]
+            a["t"] += entry["t"]
+            a["quests"][entry["q"]] = a["quests"].get(entry["q"], 0) + 1
+    return {pair: {"quest": max(sorted(a["quests"]), key=a["quests"].get), "n": a["n"], "k": a["k"],
+                   "rate": a["k"] / a["n"] if a["n"] else None, "each": a["t"] / a["k"] if a["k"] else None}
+            for pair, a in acc.items()}

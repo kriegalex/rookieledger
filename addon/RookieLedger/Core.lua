@@ -65,6 +65,7 @@ local TEXTS = {
         logColours = "Difficulty noted for %d recipes", logUp = "%s: +%d skill", logNoUp = "%s: no skill point",
         logDisenchant = "%s disenchanted: %s", vein = "Vein", herb = "Herb", creature = "creature %d", item = "item %d",
         recipe = "recipe %d", copper = "%d copper", nothing = "nothing", colon = ": ",
+        questItems = "%s (quest item)",
     },
     frFR = {
         announce = "%s chargé. /ledger pour le détail.",
@@ -85,6 +86,7 @@ local TEXTS = {
         logColours = "Difficulté notée pour %d recettes", logUp = "%s : +%d compétence", logNoUp = "%s : pas de point de compétence",
         logDisenchant = "%s désenchanté : %s", vein = "Filon", herb = "Plante", creature = "créature %d", item = "objet %d",
         recipe = "recette %d", copper = "%d cuivre", nothing = "rien", colon = " : ",
+        questItems = "%s (objet de quête)",
     },
 }
 local L = TEXTS[GetLocale and GetLocale() or "enUS"] or TEXTS.enUS
@@ -149,7 +151,7 @@ local function InitDB()
         db.own = ns.Record.New()
     end
     local own = db.own
-    for _, section in ipairs({ "c", "s", "d", "g", "m" }) do
+    for _, section in ipairs({ "c", "s", "d", "g", "m", "q" }) do
         if type(own[section]) ~= "table" then
             own[section] = {}
         end

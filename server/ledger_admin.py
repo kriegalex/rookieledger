@@ -8,7 +8,8 @@
   python3 -I server/ledger_admin.py purge                  delete the copies of other members' records that versions
                                                            with guild sync uploaded; nothing reads them
   python3 -I server/ledger_admin.py summary                what the records say: thresholds, skill-ups, disenchants,
-                                                           gathering yields and places, corpses looted per creature
+                                                           gathering yields and places, corpses looted per creature,
+                                                           quest items
 
 The upload endpoint notices a new or revoked token within 15 seconds; nothing needs restarting.
 """
@@ -54,6 +55,12 @@ def summary(con, out=sys.stdout):
     for creature, d in sorted(drops.items(), key=lambda kv: -kv[1]["n"])[:TOP_CREATURES]:
         coin = "coin unknown" if d["coin"] is None else f"{d['coin']:.0f} copper each"
         print(f"  creature {creature}, {d['n']} corpses, {coin}, {len(d['items'])} different items", file=out)
+    quest_items = lc.quest_item_rates(records)
+    print(f"\nquest items ({len(quest_items)} creature and item pairs): of the corpses looted while the quest wanted the item",
+          file=out)
+    for (creature, item), r in sorted(quest_items.items()):
+        rate = "no corpse counted yet" if r["rate"] is None else f"{r['k']}/{r['n']} = {r['rate']:.0%}"
+        print(f"  creature {creature} item {item} (quest {r['quest']}): {rate}", file=out)
 
 
 def main():

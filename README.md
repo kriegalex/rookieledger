@@ -7,7 +7,8 @@ that uploads it to your guild's site. The guild then learns together what guides
 - how often a yellow or green recipe really gives a skill point;
 - what disenchanting an item of a given quality and item level really gives;
 - what a vein or a herb really gives, and where they are found;
-- what each kind of monster really drops, and how much coin.
+- what each kind of monster really drops, and how much coin;
+- how often a monster really gives the item a quest asks for.
 
 ## What is recorded
 
@@ -18,7 +19,14 @@ Only numbers the game client shows you:
 - per disenchanted item: its quality, class and item level, and the materials received;
 - per kind of vein or herb you gathered: how often, the materials received, and the places (map and position on it)
   where you gathered it;
-- per kind of monster you looted alone: how many corpses, their coin, and every item they held (quest items left out).
+- per kind of monster you looted alone: how many corpses, their coin, and every item they held (quest items left out);
+- per quest item a kind of monster gave you: the quest and the objective that asked for it, how many corpses of that
+  monster you looted while the quest still wanted the item, and how many of them held it.
+
+A quest item only drops for who has the quest, which is why it is counted apart: against the corpses looted while
+the quest wanted it, not against all of them. The addon learns which quest that is from your quest log, the first
+time the item shows in a corpse; that first corpse is not counted, so that the drop that made the item known does
+not raise its rate. Of your quests, the record holds only the number of a quest that asked for such an item.
 
 No character name, account name, realm, guild name, chat, gold total or inventory is recorded, and no time other
 than that of the record's last change. A record is named by a random 8-digit id made on first login. A record only
@@ -111,6 +119,9 @@ python3 -I server/ledger_ingest.py --port 8787 --db data/ledger.sqlite   # behin
 python3 -I server/ledger_admin.py add <token> "<who>"                   # register a member's token
 python3 -I server/ledger_admin.py list | revoke <token or who> | unbind <token or who> | summary | purge
 ```
+
+A site running an older `server/` keeps accepting uploads from a newer addon: what it does not know of a record
+(quest items, before v0.4.0) is left out, not refused. Update `server/` to keep it.
 
 An unknown token is refused before the request body is read. A token is tied to the record id of its first upload,
 so a member cannot upload under another member's id; `unbind` lifts the tie for a member whose saved file was lost.

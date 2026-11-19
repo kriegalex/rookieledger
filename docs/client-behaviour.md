@@ -15,12 +15,14 @@ changes, repeat the observation and correct the page.
 | Character | Undead rogue with Skinning, from level 4 up, alone (not in a group) |
 | Place | Tirisfal Glades, open world, with many other players around |
 | Size | 636 monster deaths nearby, 63 of them the character's own kills, 95 loot windows, 27 Skinning casts, 9 Pick Pocket casts |
+| Quests | 13 minutes with 12 quests in the log: 46 loot windows, 9 of them holding a quest item (3 different items) |
 | Creatures killed | 12 kinds: 1501, 1504, 1505, 1506, 1507, 1508, 1512, 1547, 1548, 1553, 1667, 1919 |
 
-Sections 1 to 5 come from [`tools/Probe.lua`](../tools/Probe.lua): a file added to the installed addon for the time
-of the observation, which registers the events below, calls the functions below at fixed moments and writes one
-line per answer to a saved variable. It records nothing in the ledger. To repeat an observation, follow the steps at
-the top of that file. Sections 6 and 7 come from playing with the addon and reading its saved files afterwards.
+Sections 1 to 5 come from [`tools/Probe.lua`](../tools/Probe.lua) and section 8 from
+[`tools/QuestProbe.lua`](../tools/QuestProbe.lua): files added to the installed addon for the time of the
+observation, which register the events below, call the functions below at fixed moments and write one line per
+answer to a saved variable. They record nothing in the ledger. To repeat an observation, follow the steps at the top
+of the file. Sections 6 and 7 come from playing with the addon and reading its saved files afterwards.
 
 Nothing here was observed in a dungeon, in a group, or outside that starting zone.
 
@@ -121,6 +123,42 @@ player's kill (see section 3).
   `ScrollingMessageFrame` with hyperlinks and top insert mode, `SetItemRef` for a clicked item link, and a minimap
   button through LibDataBroker and LibDBIcon.
 
+## 8. Quest items and the quest log
+
+Which functions exist:
+
+| Present | Absent |
+|---|---|
+| `C_QuestLog.GetNumQuestLogEntries`, `GetInfo`, `GetQuestObjectives`, `IsOnQuest`, `IsComplete`, `GetLogIndexForQuestID`, `GetQuestIDForLogIndex`, `ReadyForTurnIn`, `UnitIsRelatedToActiveQuest` | the globals `GetNumQuestLogEntries`, `GetQuestLogTitle`, `GetItemInfoInstant`, `IsQuestItem` |
+| the globals `GetNumQuestLeaderBoards`, `GetQuestLogLeaderBoard`, `GetQuestLogSpecialItemInfo`, and `C_Item.GetItemInfoInstant` | |
+
+What they return:
+
+- `C_QuestLog.GetInfo(index)` gives a table with `questID`, `title` and `isHeader`; the log held 12 quests.
+- `C_QuestLog.GetQuestObjectives(questID)` gives one table per objective with `text`, `type` (`item`, `monster` or
+  `object` were seen), `finished`, `numFulfilled` and `numRequired`.
+- The text of an item objective is the item's name, a colon and the count: "Sang de sombredogue : 1/5". In French
+  the space before the colon is a no-break space (bytes `C2 A0`), not a plain one. The objective carries no item
+  id: the name is the only link to the item.
+- For about two seconds after login the item's name is missing from that text ("  : 1/5"), for all 10 item
+  objectives. A `QUEST_LOG_UPDATE` follows and the names are there.
+
+Quest items in a loot window:
+
+- `GetLootSlotInfo(slot)` returns `true` as its seventh value for a quest item: 9 of 9 quest slots, and `false`
+  for all 44 other slots. It returns no quest id (eighth and ninth values `nil`).
+- `C_Item.GetItemInfoInstant` gives class 12 (Quest) for each of the three items.
+- Exactly one objective of the log named the item, in 9 of 9 windows.
+- A quest item also comes from world objects (a `GameObject` source), not only from corpses: 5 of the 9 windows.
+- One quest item dropped from two kinds of monster (creatures 1547 and 1548).
+
+After a quest item is looted, within 0.6 to 0.7 s of its window:
+
+- `QUEST_WATCH_UPDATE` with the quest's id, `UNIT_QUEST_LOG_CHANGED` for the player, and `UI_INFO_MESSAGE` with
+  type 317 and the text "Sang de sombredogue : 2/5". The three come in no fixed order.
+- The objective's `numFulfilled` has gone up by then, and `finished` turns `true` on the last one, with a further
+  `UI_INFO_MESSAGE` of type 314.
+
 ## Not verified
 
 Read elsewhere, not tried:
@@ -138,6 +176,10 @@ Reasoned from the observations, not seen directly:
   corpse was met, so this answer was never seen.
 
 Never met:
+
+- Whether a monster still gives a quest item once the objective is reached. Both observations ended at the
+  objective's last item.
+- An item that two quests of the log ask for at once.
 
 - A first, successful Pick Pocket on a monster with nothing in its pocket: whether a loot window opens.
 - Loot in a group, where a window shows one member's share.

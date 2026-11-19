@@ -10,6 +10,9 @@
 --   and the coin it held. Only while not in a group (there the window shows one member's share), only what is not
 --   a quest item, and each corpse once. A window opened by Skinning or Pick Pocket names a creature too, but holds
 --   nothing it dropped: it is not read.
+-- Quest items: a quest item only drops for who has the quest, so it is counted apart, against the corpses looted
+--   while the quest still wanted it. Which quest that is comes from the quest log: the objective whose text names
+--   the item (see "Quest items" further down).
 --
 -- Nothing is recorded for a profession while its skill carries a bonus (racial, enchant, lure): colours and
 -- skill-ups follow the boosted skill, and mixing the two would blur the thresholds.
@@ -522,6 +525,104 @@ local function GatherLoot()
     return true
 end
 
+-- Quest items -----------------------------------------------------------------
+
+local QuestLog = C_QuestLog or {}
+local questItems   -- [creature] = { [item] = its entry in the record }, the quest items known to drop from it
+
+-- { { quest, objective, text } } for the objectives of the quest log that still want an item. The text reads
+-- "Darkhound Blood: 1/5": it is all the client tells of which item that is.
+local function WantedItems()
+    local wanted = {}
+    for index = 1, ns.Plain(ns.Try(QuestLog.GetNumQuestLogEntries)) or 0 do
+        local info = ns.Try(QuestLog.GetInfo, index)
+        local quest = type(info) == "table" and not ns.Plain(info.isHeader) and ns.Plain(info.questID)
+        if type(quest) == "number" then
+            local objectives = ns.Try(QuestLog.GetQuestObjectives, quest)
+            for j, objective in ipairs(type(objectives) == "table" and objectives or {}) do
+                if type(objective) == "table" and ns.Plain(objective.type) == "item" and ns.Plain(objective.finished) == false then
+                    wanted[#wanted + 1] = { quest, j, ns.Plain(objective.text) }
+                end
+            end
+        end
+    end
+    return wanted
+end
+
+-- The quest and objective that want the item of that name, when exactly one does. The name must be all that stands
+-- before the colon: "Claw" is not what "Claw of the Bear: 0/3" asks for. Some languages put a space before the
+-- colon, and not always a plain one.
+local function WantedBy(wanted, name)
+    local quest, objective
+    for _, w in ipairs(wanted) do
+        local text = w[3]
+        if type(text) == "string" and text:sub(1, #name) == name and text:sub(#name + 1):find("^[^%w]*:") then
+            if quest then
+                return nil
+            end
+            quest, objective = w[1], w[2]
+        end
+    end
+    return quest, objective
+end
+
+local function StillWanted(wanted, quest, objective)
+    for _, w in ipairs(wanted) do
+        if w[1] == quest and w[2] == objective then
+            return true
+        end
+    end
+    return false
+end
+
+-- A corpse of creature, counted for the first time. dropped: { [quest item] = quantity } it held, names: their
+-- names. True when the record changed.
+local function QuestChances(creature, dropped, names)
+    local known = questItems[creature]
+    if not known and not next(dropped) then
+        return false
+    end
+    local wanted = WantedItems()
+    local changed = false
+    for item, entry in pairs(known or {}) do
+        if StillWanted(wanted, entry.q, entry.j) then
+            Record.QuestChance(entry, dropped[item])
+            changed = true
+        end
+    end
+    -- A quest item not seen from this creature before: the corpse tells that it drops, not how often, and is left
+    -- out of the count that starts here.
+    for item in pairs(dropped) do
+        if not (known and known[item]) and type(names[item]) == "string" and names[item] ~= "" then
+            local quest, objective = WantedBy(wanted, names[item])
+            local entry = quest and Record.QuestItem(ns.db.own, creature, item, quest, objective)
+            if entry then
+                questItems[creature] = questItems[creature] or {}
+                questItems[creature][item] = entry
+                changed = true
+            end
+        end
+    end
+    return changed
+end
+
+-- Reads the quest items the record already knows, by creature.
+local function LoadQuestItems()
+    questItems = {}
+    for key, entry in pairs(ns.db.own.q) do
+        local creature, item
+        if type(key) == "string" then
+            creature, item = key:match("^(%d+):(%d+)$")
+        end
+        if creature and type(entry) == "table" and type(entry.q) == "number" and type(entry.j) == "number"
+            and type(entry.n) == "number" and type(entry.k) == "number" and type(entry.t) == "number" then
+            creature, item = tonumber(creature), tonumber(item)
+            questItems[creature] = questItems[creature] or {}
+            questItems[creature][item] = entry
+        end
+    end
+end
+
 -- Monster loot ---------------------------------------------------------------
 
 local MONEY_SLOT = (Enum and Enum.LootSlotType and Enum.LootSlotType.Money) or LOOT_SLOT_MONEY or 2
@@ -653,7 +754,7 @@ local function CorpseLoot()
             end
             local corpse = corpses[guid]
             if not corpse then
-                corpse = { creature = creature, items = {} }
+                corpse = { creature = creature, items = {}, quest = {}, names = {} }
                 corpses[guid] = corpse
                 order[#order + 1] = guid
             end
@@ -670,6 +771,10 @@ local function CorpseLoot()
                     amount = math.max(1, math.floor(quantity / named) + (nth <= quantity % named and 1 or 0))
                 end
                 corpse.items[item] = (corpse.items[item] or 0) + amount
+            elseif item then
+                -- Not a drop like the others: only who has the quest sees it. Counted apart (QuestChances).
+                corpse.quest[item] = (corpse.quest[item] or 0) + (amount or quantity)
+                corpse.names[item] = type(link) == "string" and link:match("%[(.-)%]") or nil
             end
         end
     end
@@ -696,6 +801,10 @@ local function CorpseLoot()
             if copper and copper > 0 then
                 held = (held and (held .. ", ") or "") .. CoinText(copper)
             end
+            if next(corpses[guid].quest) then
+                held = (held and (held .. ", ") or "") .. ns.L.questItems:format(LootText(corpses[guid].quest))
+            end
+            QuestChances(corpses[guid].creature, corpses[guid].quest, corpses[guid].names)
             ns.Log("m", CreatureText(guid, corpses[guid].creature) .. ns.L.colon .. (held or ns.L.nothing))
         end
     end
@@ -763,6 +872,7 @@ end
 
 function Scan.Init()
     LoadSeen()
+    LoadQuestItems()
     local frame = CreateFrame("Frame")
     for _, event in ipairs({
         "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED", "SKILL_LINES_CHANGED",

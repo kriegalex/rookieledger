@@ -1,6 +1,6 @@
 -- Record.lua: one account's observations.
 --
--- A record is { rev, t, b, c, s, d, g, m }: a change counter, the time and game build of the last change, and
+-- A record is { rev, t, b, c, s, d, g, m, q }: a change counter, the time and game build of the last change, and
 --   c[recipe] = { profession, lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3 }
 --       the lowest and highest skill at which the recipe showed each colour (0 orange, 1 yellow, 2 green, 3 grey;
 --       0 = never seen in that colour)
@@ -13,6 +13,10 @@
 --   m[creature] = { n = corpses looted, cn = those whose coin is known, c = their coin in copper,
 --                   i = { [item] = { quantity, corpses that held it } } }
 --       creature is the game's id of the kind of monster
+--   q["creature:item"] = { q = quest, j = objective, n = chances, k = drops, t = quantity }
+--       a quest item, which only drops for who has the quest: n counts the corpses of that kind of monster looted
+--       while objective j of the quest was still open, k those that held the item, t how many of it they held.
+--       The corpse that first showed the item for that quest is in none of them: it is how the link was learned.
 -- Only numbers: a record holds no name and no text. Every value only ever grows. Nothing of it is sent in game: the
 -- game writes it to the saved file, and the companion app uploads that file to the guild site, where
 -- server/ledger_common.py checks the same shape and the same bounds.
@@ -24,9 +28,10 @@ ns.Record = Record
 local MAX_PLACES = 2000   -- per kind of node: past that, gathers still count but no new place is noted
 local NEAR = 8            -- thousandths of a map: two gathers this close are the same vein or herb
 local MAX_ITEMS = 5000    -- per kind of creature
+local MAX_QUEST_ITEMS = 5000
 
 function Record.New()
-    return { rev = 0, t = 0, b = 0, c = {}, s = {}, d = {}, g = {}, m = {} }
+    return { rev = 0, t = 0, b = 0, c = {}, s = {}, d = {}, g = {}, m = {}, q = {} }
 end
 
 -- Notes that recipe showed colour at skill. True when that widened a range.
@@ -143,4 +148,32 @@ function Record.Corpse(rec, creature, copper, loot)
         entry.c = entry.c + copper
     end
     AddLoot(entry.i, loot, MAX_ITEMS)
+end
+
+-- Notes that creature drops item for objective `objective` of quest. Returns the entry to count chances in, or nil
+-- when the record holds as many quest items as it may.
+function Record.QuestItem(rec, creature, item, quest, objective)
+    local key = creature .. ":" .. item
+    local entry = rec.q[key]
+    if not entry then
+        local held = 0
+        for _ in pairs(rec.q) do
+            held = held + 1
+        end
+        if held >= MAX_QUEST_ITEMS then
+            return nil
+        end
+        entry = { q = quest, j = objective, n = 0, k = 0, t = 0 }
+        rec.q[key] = entry
+    end
+    return entry
+end
+
+-- One corpse looted while the quest wanted the item. quantity: how many it held, nil for none.
+function Record.QuestChance(entry, quantity)
+    entry.n = entry.n + 1
+    if quantity then
+        entry.k = entry.k + 1
+        entry.t = entry.t + quantity
+    end
 end

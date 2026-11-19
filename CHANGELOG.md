@@ -1,9 +1,9 @@
-# RookieLedger v0.3.0
+# RookieLedger v0.4.0
 
-- New: a window that shows what the addon recorded last (the monster, the items as links, the coin) and the counts
-  of this session and in total. Open it with `/ledger show`, from the minimap button or from the game's AddOns
-  options.
-- New: a minimap button. Left click opens the window, right click shows your token, and its tooltip gives the
-  counts. `/ledger minimap` hides it or brings it back.
-- The list of what was recorded last is kept per character on your computer. It is not part of the record and the
-  companion app does not read it.
+- New: quest items. A monster only gives a quest item to who has the quest, so the addon now counts it apart: of
+  the corpses you looted while your quest still wanted the item, how many held it. It finds the quest in your quest
+  log the first time the item shows; that first corpse is not counted.
+- The window no longer says a corpse held nothing when it held a quest item: the item is named, marked as a quest
+  item.
+- For who runs a guild site: update `server/` to keep the quest items of the uploads. An older site still accepts
+  the uploads and leaves them out.
