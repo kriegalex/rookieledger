@@ -16,6 +16,7 @@ local ROWS = { { "c", "rowC" }, { "s", "rowS" }, { "d", "rowD" }, { "g", "rowG" 
 
 local window, cells, messages   -- the window, its { [kind] = { session, total } } figures and its log
 local dbicon, minimapCheck
+local tooltipCheck, showFrom   -- the options page's tooltip switch, and what sets its quality control to the setting
 
 -- Runs f. An error stops f alone; a copy of the repository says what it was.
 local function Guard(f, ...)
@@ -168,10 +169,17 @@ local function Fill()
     end
 end
 
--- Shows the window's figures and log as they are now. Nothing to do while it is closed: opening it comes here.
+-- Shows the window's figures and log as they are now, and the options page's switches as the settings are.
+-- Nothing to do for the window while it is closed: opening it comes here.
 function UI.Refresh()
     if window and window:IsShown() then
         Guard(Fill)
+    end
+    if tooltipCheck then
+        tooltipCheck:SetChecked(not ns.here.tooltip.off)
+    end
+    if showFrom then
+        Guard(showFrom)
     end
 end
 
@@ -256,6 +264,55 @@ end
 
 -- The page in the game's AddOns options ------------------------------------------------
 
+-- The tooltip's two settings, under `above`: a switch, and the quality from which items are shown. The game's own
+-- drop-down where the client has it, else a button that goes from one quality to the next.
+local function TooltipOptions(panel, above)
+    local Tip = ns.Tooltip
+    local check = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    check:SetPoint("TOPLEFT", above, "BOTTOMLEFT", above == minimapCheck and 0 or -2, -10)
+    check:SetChecked(not ns.here.tooltip.off)
+    check:SetScript("OnClick", function()
+        Tip.Toggle()
+        UI.Refresh()
+    end)
+    local label = Text(panel, "GameFontHighlight")
+    label:SetPoint("LEFT", check, "RIGHT", 4, 0)
+    label:SetText(L.optTooltip)
+    tooltipCheck = check
+
+    local from = Text(panel, "GameFontHighlight")
+    from:SetPoint("TOPLEFT", check, "BOTTOMLEFT", 6, -14)
+    from:SetText(L.optFrom)
+
+    local ok, dropdown = pcall(CreateFrame, "DropdownButton", nil, panel, "WowStyle1DropdownTemplate")
+    if ok and dropdown and dropdown.SetupMenu then
+        dropdown:SetPoint("LEFT", from, "RIGHT", 10, 0)
+        dropdown:SetSize(180, 26)
+        dropdown:SetupMenu(function(_, root)
+            for quality = 0, Tip.QUALITIES do
+                root:CreateRadio(Tip.QualityName(quality), function(q) return Tip.From() == q end, Tip.SetFrom, quality)
+            end
+        end)
+        showFrom = function()
+            if dropdown.GenerateMenu then
+                dropdown:GenerateMenu()
+            end
+        end
+        return
+    end
+    local button = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    button:SetPoint("LEFT", from, "RIGHT", 10, 0)
+    button:SetSize(180, 24)
+    showFrom = function()
+        button:SetText(Tip.QualityName(Tip.From()))
+    end
+    button:SetScript("OnClick", function()
+        Tip.SetFrom((Tip.From() + 1) % (Tip.QUALITIES + 1))
+        showFrom()
+    end)
+    showFrom()
+end
+
 local function Options()
     local panel = CreateFrame("Frame")
     panel.name = "RookieLedger"
@@ -284,6 +341,8 @@ local function Options()
         label:SetText(L.optMinimap)
         minimapCheck = check
     end
+
+    Guard(TooltipOptions, panel, minimapCheck or open)
 
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
         Settings.RegisterAddOnCategory(Settings.RegisterCanvasLayoutCategory(panel, panel.name))

@@ -13,6 +13,7 @@
 --   log     the last things recorded, as the window shows them: { time, kind, text } each.
 --   minimap where the minimap button sits and whether it is hidden (the table LibDBIcon keeps).
 --   window  where the window was left.
+--   tooltip the settings of the monster tooltip: off, and from, the lowest item quality it shows.
 -- The addon sends nothing, in game or out of it: the game writes these tables to files at logout.
 local ADDON, ns = ...
 
@@ -53,7 +54,7 @@ local TEXTS = {
         status = "%d recipes observed, %d crafts, %d disenchants, %d veins and herbs gathered, %d corpses looted.",
         token = "Your token (Ctrl+C to copy). Give it to the guild's ledger keeper, to nobody else:",
         tokenChat = "token: %s",
-        help = "/ledger (status) | /ledger show | /ledger minimap | /ledger token",
+        help = "/ledger (status) | /ledger show | /ledger tooltip | /ledger minimap | /ledger token",
         skipped = "a skill bonus is active (racial or item): colours are not recorded for this profession while it lasts.",
         rowC = "Recipes observed", rowS = "Crafts", rowD = "Disenchants", rowG = "Veins and herbs", rowM = "Corpses looted",
         session = "This session", total = "In total", recent = "Last recorded", logEmpty = "Nothing recorded yet.",
@@ -66,6 +67,10 @@ local TEXTS = {
         logDisenchant = "%s disenchanted: %s", vein = "Vein", herb = "Herb", creature = "creature %d", item = "item %d",
         recipe = "recipe %d", copper = "%d copper", nothing = "nothing", colon = ": ",
         questItems = "%s (quest item)",
+        tipLooted = "looted %dx", tipQuest = "quest", tipCoin = "Coin", tipMore = "+%d more", tipAll = "All", percent = "%d%%",
+        tooltipOn = "monster tooltips show what you looted from them.", tooltipOff = "monster tooltips no longer show loot. /ledger tooltip brings it back.",
+        optTooltip = "Show what a monster gave you in its tooltip", optFrom = "Show items from:",
+        quality1 = "Common", quality2 = "Uncommon", quality3 = "Rare", quality4 = "Epic",
     },
     frFR = {
         announce = "%s chargé. /ledger pour le détail.",
@@ -74,7 +79,7 @@ local TEXTS = {
         status = "%d recettes observées, %d fabrications, %d désenchantements, %d filons et plantes récoltés, %d cadavres fouillés.",
         token = "Votre jeton (Ctrl+C pour copier). À donner au responsable du registre de la guilde, à personne d'autre :",
         tokenChat = "jeton : %s",
-        help = "/ledger (état) | /ledger show | /ledger minimap | /ledger token",
+        help = "/ledger (état) | /ledger show | /ledger tooltip | /ledger minimap | /ledger token",
         skipped = "un bonus de compétence est actif (racial ou objet) : les couleurs ne sont pas notées pour ce métier tant qu'il dure.",
         rowC = "Recettes observées", rowS = "Fabrications", rowD = "Désenchantements", rowG = "Filons et plantes", rowM = "Cadavres fouillés",
         session = "Cette session", total = "Au total", recent = "Derniers enregistrements", logEmpty = "Rien d'enregistré pour l'instant.",
@@ -87,6 +92,10 @@ local TEXTS = {
         logDisenchant = "%s désenchanté : %s", vein = "Filon", herb = "Plante", creature = "créature %d", item = "objet %d",
         recipe = "recette %d", copper = "%d cuivre", nothing = "rien", colon = " : ",
         questItems = "%s (objet de quête)",
+        tipLooted = "fouillé %d×", tipQuest = "quête", tipCoin = "Pièces", tipMore = "+%d de plus", tipAll = "Tout", percent = "%d %%",
+        tooltipOn = "l'infobulle des monstres montre ce que vous y avez trouvé.", tooltipOff = "l'infobulle des monstres ne montre plus le butin. /ledger tooltip le fait revenir.",
+        optTooltip = "Montrer dans l'infobulle d'un monstre ce qu'il vous a donné", optFrom = "Afficher les objets à partir de :",
+        quality1 = "Commun", quality2 = "Inhabituel", quality3 = "Rare", quality4 = "Épique",
     },
 }
 local L = TEXTS[GetLocale and GetLocale() or "enUS"] or TEXTS.enUS
@@ -170,7 +179,7 @@ local function InitDB()
         RookieLedgerLocal = here
     end
     here.v = ns.FORMAT
-    for _, part in ipairs({ "log", "minimap", "window" }) do
+    for _, part in ipairs({ "log", "minimap", "window", "tooltip" }) do
         if type(here[part]) ~= "table" then
             here[part] = {}
         end
@@ -279,6 +288,11 @@ local function Command(text)
         ns.UI.Toggle()
     elseif word == "minimap" and ns.UI then
         ns.UI.ToggleMinimap()
+    elseif (word == "tooltip" or word == "infobulle") and ns.Tooltip then
+        ns.Tooltip.Toggle()
+        if ns.UI then
+            ns.UI.Refresh()
+        end
     else
         ns.Print(ns.L.help)
     end
@@ -303,6 +317,9 @@ frame:SetScript("OnEvent", function(_, event, name)
         SlashCmdList.ROOKIELEDGER = Command
     elseif ns.db then
         ns.Scan.Init()
+        if ns.Tooltip then
+            pcall(ns.Tooltip.Init)   -- a client without that tooltip loses it, and nothing else
+        end
         if ns.UI then
             ns.UI.Init()
         end

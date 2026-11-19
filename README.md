@@ -40,7 +40,7 @@ does not read it. It holds:
   out of the record;
 - the last 50 things recorded as the window shows them, with their time and the names of the monsters you were
   pointing at;
-- where you left the window and the minimap button.
+- where you left the window and the minimap button, and your settings for the monster tooltip.
 
 Gathering places are positions you stood at. They are in your saved file and, if you use the companion app, on your
 guild's site, where the guild's ledger keeper can read them.
@@ -55,11 +55,18 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 | `/ledger` | Status: recipes, crafts, disenchants, gathers and corpses recorded |
 | `/ledger show` | Opens or closes the window |
 | `/ledger minimap` | Hides the minimap button or brings it back |
+| `/ledger tooltip` | Switches the loot lines in monster tooltips off or on |
 | `/ledger token` | Shows your upload token, to give to your guild's ledger keeper |
 
 The window lists the last 50 things recorded (the monster or the vein, the items as links, the coin) and the counts
 of this session and in total. The minimap button opens it with a left click and shows your token with a right click;
 its tooltip gives the counts. The window can also be opened from the game's AddOns options.
+
+Pointing at a monster shows, under its tooltip, what that kind of monster gave you so far: how many you looted, each
+item with how often it was there, the quest items against the corpses looted while the quest wanted them, and the
+coin on average. These are your own figures, the only ones the addon has: it receives nothing from the guild site.
+Under ten corpses a rate reads "3/7", not as a percentage. In the AddOns options you can switch these lines off and
+choose the quality from which items are shown (all of them, or from common, uncommon, rare or epic up).
 
 At every login the addon says in the chat which version is running; a copy taken from this repository instead of
 a release says `dev`.

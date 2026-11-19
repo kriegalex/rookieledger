@@ -18,4 +18,5 @@ Libs\LibDBIcon-1.0\lib.xml
 Core.lua
 Record.lua
 Scan.lua
+Tooltip.lua
 UI.lua

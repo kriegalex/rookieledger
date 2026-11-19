@@ -1,9 +1,8 @@
-# RookieLedger v0.4.0
+# RookieLedger v0.5.0
 
-- New: quest items. A monster only gives a quest item to who has the quest, so the addon now counts it apart: of
-  the corpses you looted while your quest still wanted the item, how many held it. It finds the quest in your quest
-  log the first time the item shows; that first corpse is not counted.
-- The window no longer says a corpse held nothing when it held a quest item: the item is named, marked as a quest
-  item.
-- For who runs a guild site: update `server/` to keep the quest items of the uploads. An older site still accepts
-  the uploads and leaves them out.
+- New: pointing at a monster shows, under its tooltip, what that kind of monster gave you so far: how many you
+  looted, each item with how often it was there, quest items, and the coin on average. Under ten corpses a rate
+  reads "3/7" instead of a percentage.
+- These are your own figures. The addon still receives nothing from the guild site or from other players.
+- In the game's AddOns options: a switch for these lines (on at first), and the item quality from which they show,
+  to leave out grey items or keep only uncommon and better. `/ledger tooltip` is the switch as a command.

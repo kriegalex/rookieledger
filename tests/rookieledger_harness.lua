@@ -4,7 +4,7 @@
 -- Prints "ok <name>" per check and exits non-zero on the first failure. With a second argument it writes client A's
 -- RookieLedgerDB in the layout the game gives a saved-variables file, for the server's parser tests.
 local ADDON_DIR, OUT = arg[1], arg[2]
-local FILES = { "Core.lua", "Record.lua", "Scan.lua", "UI.lua" }
+local FILES = { "Core.lua", "Record.lua", "Scan.lua", "Tooltip.lua", "UI.lua" }
 
 local clock = 0
 local timers = {}
@@ -45,7 +45,8 @@ end
 
 local function newClient(name)
     local c = { name = name, online = true, frames = {}, printed = {}, version = "@project-version@",
-        profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {}, texts = {}, named = {}, quests = {} }
+        profs = {}, window = nil, recipes = {}, bags = {}, loot = {}, items = {}, texts = {}, named = {}, quests = {},
+        itemInfo = {}, buttons = {} }
     local env = setmetatable({}, { __index = _G })
     c.env = env
     env.print = function(text) c.printed[#c.printed + 1] = text end
@@ -56,7 +57,11 @@ local function newClient(name)
     env.C_AddOns = { GetAddOnMetadata = function(addon, field)
         return addon == "RookieLedger" and field == "Version" and c.version or nil
     end }
-    env.UnitGUID = function(unit) return unit == "target" and c.target or ("Player-6941-" .. name) end
+    env.UnitGUID = function(unit)
+        if unit == "mouseover" then return c.mouseover end
+        return unit == "target" and c.target or ("Player-6941-" .. name)
+    end
+    env.UnitIsPlayer = function(unit) return unit ~= "mouseover" end
     env.UnitName = function(unit) return unit == "target" and c.targetName or name end
     env.date = os.date
     env.IsInGroup = function() return c.grouped == true end
@@ -94,12 +99,22 @@ local function newClient(name)
             return text
         end
         function w:CreateTexture() return widget() end
+        function w:HookScript(script, handler) self.scripts[script] = handler end
+        function w:HasScript() return true end
+        function w:GetUnit() return nil, "mouseover" end
+        function w:AddLine(text) self.lines[#self.lines + 1] = text end
+        function w:AddDoubleLine(left, right) self.lines[#self.lines + 1] = left .. " = " .. right end
+        function w:SetupMenu(generator) self.menu = generator end
+        -- The game's methods start with a capital; anything else is a field somebody set, or nothing.
         return setmetatable(w, { __index = function(_, key)
-            if key ~= "handler" then return function() end end
+            if type(key) == "string" and key:match("^%u") then return function() end end
         end })
     end
     env.CreateFrame = function(kind, frameName)
+        if kind == "DropdownButton" and c.nodropdown then error("no such frame type") end
         local frame = widget()
+        if kind == "DropdownButton" then c.dropdown = frame end
+        if kind == "Button" then c.buttons[#c.buttons + 1] = frame end
         frame.kind = kind
         c.frames[#c.frames + 1] = frame
         if frameName then c.named[frameName] = frame end
@@ -107,6 +122,18 @@ local function newClient(name)
         return frame
     end
     env.UIParent, env.GameTooltip, env.GameFontHighlightSmall, env.UISpecialFrames = widget(), widget(), {}, {}
+    -- What the client knows of an item asked for by its id: c.itemInfo[id] = { name, quality }. Asked by its link,
+    -- as the disenchants do, it answers as GetItemInfo further down.
+    env.C_Item = { GetItemInfo = function(item)
+        if type(item) == "number" then
+            local info = c.itemInfo[item]
+            if info then return info[1], nil, info[2] end
+            return nil
+        end
+        return env.GetItemInfo(item)
+    end }
+    env.ITEM_QUALITY_COLORS = { [0] = { hex = "|cff9d9d9d" }, { hex = "|cffffffff" }, { hex = "|cff1eff00" } }
+    env.ITEM_QUALITY2_DESC = "Inhabituel"
     env.Settings = {
         RegisterCanvasLayoutCategory = function(_, panelName) return panelName end,
         RegisterAddOnCategory = function(category) c.options = category end,
@@ -227,6 +254,7 @@ local function newClient(name)
     end
     function c.load(saved)
         c.frames, c.ns, c.texts, c.named, c.messages, c.icon, c.broker, c.options = {}, {}, {}, {}, nil, nil, nil, nil
+        c.dropdown, c.buttons = nil, {}
         env.RookieLedgerDB = saved
         for _, file in ipairs(FILES) do
             local chunk = assert(loadfile(ADDON_DIR .. "/" .. file))
@@ -744,6 +772,73 @@ A.quests = { { id = 402, objectives = { wants("Griffe putride : 0/7") } } }
 houndCorpse({ { 2859, 1, quest = true, name = "Griffe" } })
 check("a name that only starts another item's is not that item", A.db.own.q["5000:2859"] == nil)
 A.quests = {}
+
+-- The monster tooltip ------------------------------------------------------------
+-- Under a monster's tooltip: what this account's record holds of it.
+
+local function tipOf(creature, spawn)
+    local tip = A.env.GameTooltip
+    tip.lines = {}
+    A.mouseover = creature and corpse(creature, spawn or "0000009901") or "Player-6941-B"
+    tip.scripts.OnTooltipCleared(tip)
+    tip.scripts.OnTooltipSetUnit(tip)
+    return tip.lines
+end
+A.itemInfo = { [2589] = { "Étoffe de lin", 1 }, [771] = { "Défense ébréchée", 0 }, [2858] = { "Sang de sombredogue", 1 } }
+A.load(A.db)
+local tipLines = tipOf(299)
+check("a monster's tooltip tells how many were looted and what they held, the most frequent first",
+    tipLines[1] == " " and tipLines[2] == "|cffe6b422RookieLedger|r = |cff8a8a8afouillé 4×|r"
+    and tipLines[3] == "  |cffffffffÉtoffe de lin|r = 3/4|cff8a8a8a x1.7|r"
+    and tipLines[4] == "  |cff9d9d9dDéfense ébréchée|r = 1/4" and tipLines[5] == "  |cff8a8a8aobjet 4306|r = 1/4"
+    and tipLines[6] == "  Pièces = 93 cuivre" and #tipLines == 6, table.concat(tipLines, " | "))
+check("a monster never looted, and a player, get nothing", #tipOf(31337) == 0 and #tipOf(nil) == 0)
+tipLines = tipOf(5000)
+check("a quest item is told against the corpses looted while the quest wanted it",
+    tipLines[#tipLines] == "  |cffffffffSang de sombredogue|r|cff8a8a8a (quête)|r = 1/3", table.concat(tipLines, " | "))
+-- From ten corpses on a rate is a percentage.
+for i = 1, 10 do
+    A.lootSource = corpse(6000, ("00000030%02d"):format(i))
+    lootWindow(i <= 5 and { { 2589, 1 }, { 771, 1 } } or { { 2589, 1 } })
+end
+A.lootSource = nil
+tipLines = tipOf(6000)
+check("from ten corpses on, rates are percentages", tipLines[2]:find("fouillé 10×", 1, true)
+    and tipLines[3] == "  |cffffffffÉtoffe de lin|r = 100 %" and tipLines[4] == "  |cff9d9d9dDéfense ébréchée|r = 50 %",
+    table.concat(tipLines, " | "))
+-- The settings: the quality from which items show, and the switch.
+check("the options page offers the game's drop-down with the qualities", A.dropdown and A.dropdown.menu)
+local radios = {}
+A.dropdown.menu(nil, { CreateRadio = function(_, label, isSelected, select, data)
+    radios[#radios + 1] = { label = label, isSelected = isSelected, select = select, data = data }
+end })
+check("from all up to epic, all chosen at first", #radios == 5 and radios[1].label == "Tout" and radios[1].isSelected(0)
+    and radios[3].label == "|cff1eff00Inhabituel|r" and radios[5].label == "Épique" and not radios[2].isSelected(1))
+radios[2].select(radios[2].data)
+tipLines = tipOf(6000)
+check("items under the quality asked for are left out, the others stay", #tipLines == 3
+    and tipLines[3]:find("Étoffe de lin", 1, true) and A.env.RookieLedgerLocal.tooltip.from == 1, table.concat(tipLines, " | "))
+check("an item of unknown quality stays too", table.concat(tipOf(299), " | "):find("objet 4306", 1, true)
+    and not table.concat(tipOf(299), " | "):find("Défense", 1, true))
+A.ns.Command("tooltip")
+check("/ledger tooltip switches it off", #tipOf(6000) == 0 and A.env.RookieLedgerLocal.tooltip.off == true)
+A.load(A.db)
+check("off and the quality are kept over a reload", #tipOf(6000) == 0 and A.ns.Tooltip.From() == 1)
+A.ns.Command("infobulle")
+check("and on again", #tipOf(6000) == 3 and A.env.RookieLedgerLocal.tooltip.off == nil)
+-- A client without the drop-down gets a button that goes through the qualities.
+A.nodropdown = true
+A.load(A.db)
+local cycle
+for _, button in ipairs(A.buttons) do
+    if button.text == "Commun" or button.text == "|cffffffffCommun|r" then cycle = button end
+end
+check("without the drop-down, a button shows the quality chosen", cycle ~= nil)
+cycle.scripts.OnClick(cycle)
+check("and a click goes to the next one", A.ns.Tooltip.From() == 2 and cycle.text == "|cff1eff00Inhabituel|r", cycle.text)
+A.ns.Tooltip.SetFrom(0)
+A.nodropdown = nil
+A.mouseover = nil
 
 -- Saved-variables layout -------------------------------------------------------
 
