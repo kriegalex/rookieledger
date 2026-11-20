@@ -51,7 +51,7 @@ word of who stood where; while few players upload, a total is close to what one 
 
 ## The addon
 
-Install it from CurseForge or Wago with any addon manager, or unzip the release into
+Install it from CurseForge with any addon manager, or unzip the release into
 `World of Warcraft/_forever_/Interface/AddOns/`.
 
 | Command | What it does |
@@ -294,9 +294,9 @@ cd companion && go test ./...                  # CI runs these on Linux and on W
 ```
 
 The minimap button uses LibStub, CallbackHandler, LibDataBroker and LibDBIcon. They are not in the repository: the
-packager fetches them into the zip (`externals` in `.pkgmeta`). A copy of `addon/RookieLedger` taken from the
-repository has no button unless those four folders are put in `addon/RookieLedger/Libs/`, which git ignores;
-everything else works without them.
+packager fetches them into the zip, each at the version `externals` names in `.pkgmeta`. A copy of
+`addon/RookieLedger` taken from the repository has no button unless those four folders are put in
+`addon/RookieLedger/Libs/`, which git ignores; everything else works without them.
 
 [docs/client-behaviour.md](docs/client-behaviour.md) lists what the Forever client was seen to tell an addon about
 kills, corpses and loot windows, with the number of cases behind each statement. Read it before changing what the
@@ -309,7 +309,7 @@ is also what its OpenAPI document is written from; `tests/test_api.py` holds eve
 Releases: push a tag such as `v0.2.0`. The workflow runs the tests above on the tagged commit, builds the companion
 binaries and checks that `CHANGELOG.md` starts with `# RookieLedger v0.2.0`; it publishes nothing if one of these
 fails. It then packages the addon with the [BigWigs packager](https://github.com/BigWigsMods/packager), uploads it
-to CurseForge and Wago when their tokens are set as repository secrets, and attaches the binaries to the GitHub
+to CurseForge when its token is set as a repository secret, and attaches the binaries to the GitHub
 release. Update `CHANGELOG.md` first: it is the release text. A tag with a suffix, such as `v0.2.1-beta1`, is
 checked against the heading of its version, `# RookieLedger v0.2.1`.
 

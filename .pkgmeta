@@ -5,12 +5,22 @@ package-as: RookieLedger
 move-folders:
   RookieLedger/addon/RookieLedger: RookieLedger
 
-# The libraries of the minimap button. They are not in the repository: the packager fetches them into the zip.
+# The libraries of the minimap button. They are not in the repository: the packager fetches them into the zip, each
+# at the version named here, so that a release holds what was tried and not what its author last pushed. A newer one
+# is taken by naming it here.
 externals:
-  addon/RookieLedger/Libs/LibStub: https://repos.wowace.com/wow/libstub/trunk
-  addon/RookieLedger/Libs/CallbackHandler-1.0: https://repos.wowace.com/wow/callbackhandler/trunk/CallbackHandler-1.0
-  addon/RookieLedger/Libs/LibDataBroker-1.1: https://github.com/tekkub/libdatabroker-1-1
-  addon/RookieLedger/Libs/LibDBIcon-1.0: https://repos.wowace.com/wow/libdbicon-1-0/trunk/LibDBIcon-1.0
+  addon/RookieLedger/Libs/LibStub:
+    url: https://repos.wowace.com/wow/libstub/trunk
+    tag: 1.0.2-70000
+  addon/RookieLedger/Libs/CallbackHandler-1.0:
+    url: https://repos.wowace.com/wow/callbackhandler/trunk/CallbackHandler-1.0
+    tag: 1.0.9
+  addon/RookieLedger/Libs/LibDataBroker-1.1:
+    url: https://github.com/tekkub/libdatabroker-1-1
+    commit: 1a63ede0248c11aa1ee415187c1f9c9489ce3e02
+  addon/RookieLedger/Libs/LibDBIcon-1.0:
+    url: https://repos.wowace.com/wow/libdbicon-1-0/trunk/LibDBIcon-1.0
+    tag: v12.1.2
 
 manual-changelog:
   filename: CHANGELOG.md

@@ -1,6 +1,6 @@
 name: Release
 
-# A tag such as v0.2.0 publishes the addon (CurseForge, Wago, GitHub release) and attaches the companion app, once
+# A tag such as v0.2.0 publishes the addon (CurseForge, GitHub release) and attaches the companion app, once
 # the tests of the tagged commit have passed, the companion app is built and CHANGELOG.md is about that version.
 on:
   push:
@@ -76,7 +76,6 @@ jobs:
         env:
           GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GITHUB_OAUTH is the packager's deprecated name for it
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
 
   companion:
     needs: [build, addon]
