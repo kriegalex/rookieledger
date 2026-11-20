@@ -22,6 +22,7 @@ ignore:
   - docs
   - media
   - server
+  - site
   - tests
   - tools
   - README.md
