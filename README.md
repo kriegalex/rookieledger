@@ -1,15 +1,17 @@
 # RookieLedger
 
-A World of Warcraft: Forever addon that records what the game shows you while you play, and a small companion app
-that uploads it to the RookieLedger site. Players then learn together what guides get wrong on Forever, and see it
-on a [map](https://rookieledger.21crypto.ch/):
+A World of Warcraft: Forever addon that records what you gather, loot, craft and disenchant, and a small companion
+app that syncs it to the RookieLedger site. Players build together data that is up to date with the current game
+client and servers, and see it on a [map](https://rookieledger.21crypto.ch/):
 
 - at which skill a recipe turns yellow, green and grey;
-- how often a yellow or green recipe really gives a skill point;
-- what disenchanting an item of a given quality and item level really gives;
-- what a vein or a herb really gives, and where they are found;
-- what each kind of monster really drops, and how much coin;
-- how often a monster really gives the item a quest asks for.
+- how often a yellow or green recipe gives a skill point;
+- what disenchanting an item of a given quality and item level gives;
+- what a vein or a herb gives, and where they are found;
+- what each kind of monster drops, and how much coin;
+- how often a monster gives the item a quest asks for.
+
+It also shows where the guides are out of date.
 
 RookieLedger is in beta until version 1.0: it records and uploads reliably, but what it records, the map and the
 way files are published can still change from one version to the next. Every version below 1.0 is a beta, whatever
