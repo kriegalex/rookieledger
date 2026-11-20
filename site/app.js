@@ -11,6 +11,8 @@ const PAGE = 1000;                 // rows asked of the API at once: its most
 const SMALL = 10;                  // under this many occasions a rate is told as "3/7", not as a percentage
 const DEEPEST = 5;                 // window pixels per pixel of the picture, at the closest
 const GLIDE = 260;                 // milliseconds a zoom or a jump takes
+const AT_ONCE = 8;                 // tiles asked of the server at the same time
+const RETRIES = 4;                 // times a tile the server refused is asked for again
 const COLOURS = { mining: "#e8762c", herbalism: "#3fa34d", creature: "#c0392b" };
 const KINDS = { mining: "Filon", herbalism: "Plante", creature: "Monstre" };
 const QUALITIES = ["Médiocre", "Commun", "Inhabituel", "Rare", "Épique", "Légendaire"];
@@ -78,14 +80,37 @@ function clamp(v) {
   return v;
 }
 
+// Tiles are asked for a few at a time, and one the server refuses (it limits how fast one address may ask) is asked
+// for again a little later, each time later, a few times.
+const waiting = [];
+let loading = 0;
+
+function next() {
+  while (loading < AT_ONCE && waiting.length) {
+    const image = waiting.pop();          // the last asked for first: what the view shows now
+    loading++;
+    image.src = `tiles/${image.dataset.key}.webp`;
+  }
+}
+
 function tile(zoom, x, y) {
   const key = `${zoom}/${x}/${y}`;
   let image = tiles.get(key);
   if (!image) {
     image = new Image();
-    image.onload = schedule;
-    image.src = `tiles/${key}.webp`;
+    image.dataset.key = key;
+    image.dataset.tries = "0";
+    image.onload = () => { loading--; next(); schedule(); };
+    image.onerror = () => {
+      loading--;
+      const tries = Number(image.dataset.tries) + 1;
+      image.dataset.tries = String(tries);
+      if (tries <= RETRIES) setTimeout(() => { waiting.push(image); next(); }, 700 * 2 ** tries);
+      next();
+    };
     tiles.set(key, image);
+    waiting.push(image);
+    next();
   }
   return image.complete && image.naturalWidth ? image : null;
 }
