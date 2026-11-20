@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Microsoft Store package of the Windows app. Name, Publisher and PublisherDisplayName are the product's
+     identity in Partner Center, and must match it to the letter. package.ps1 writes the Version. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 desktop rescap">
+  <Identity Name="18768RetroRookie.RookieLedgerSync" Publisher="CN=59350DF1-095B-4E63-B2CF-95868C3DB2C2"
+            Version="0.0.0.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>RookieLedger Sync</DisplayName>
+    <PublisherDisplayName>Retro Rookie</PublisherDisplayName>
+    <Description>Uploads the RookieLedger addon's data to the shared map after each game session.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="fr-fr" />
+  </Resources>
+  <Dependencies>
+    <!-- 19041 (Windows 10, version 2004) is the first to pass Parameters to a startup task. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Capabilities>
+    <!-- An ordinary desktop program: it reads the game's folder, wherever that is. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+  <Applications>
+    <Application Id="RookieLedgerSync" Executable="RookieLedgerSync.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="RookieLedger Sync"
+                          Description="Uploads the RookieLedger addon's data to the shared map after each game session."
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- The start with the session, on from the first launch, without opening the window. -->
+        <desktop:Extension Category="windows.startupTask" Executable="RookieLedgerSync.exe"
+                           EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--background">
+          <desktop:StartupTask TaskId="RookieLedgerSync" Enabled="true" DisplayName="RookieLedger Sync" />
+        </desktop:Extension>
+        <!-- The name to type in a terminal, for the options (RookieLedgerSync -url ADDRESS). -->
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="RookieLedgerSync.exe"
+                        EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="RookieLedgerSync.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

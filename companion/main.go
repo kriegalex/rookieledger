@@ -429,7 +429,7 @@ func main() {
 
 	if !*once {
 		// One copy per user: settle makes this process that copy, or says that another one is.
-		release, proceed := settle(dir, st, func() { saveState(statePath, st) })
+		release, proceed := settle(dir, st, *wowDir != "" || *url != "")
 		if !proceed {
 			return
 		}

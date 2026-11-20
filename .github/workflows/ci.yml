@@ -49,3 +49,9 @@ jobs:
       - name: Companion tests (registry, autostart entry, instance lock)
         working-directory: companion
         run: go test ./...
+      # MakeAppx checks the manifest against its schema: a mistake in it shows here, not on the day of a release.
+      - name: The Microsoft Store package builds
+        shell: pwsh
+        run: |
+          go build -C companion -trimpath -ldflags "-H=windowsgui" -o dist/RookieLedgerSync.exe .
+          companion/store/package.ps1 -Tag v0.0.0 -Exe companion/dist/RookieLedgerSync.exe -Out RookieLedgerSync.msix

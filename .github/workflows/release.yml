@@ -61,6 +61,30 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The package to upload to Partner Center by hand, kept with the workflow run: it is not signed (the Store signs
+  # what it publishes), so it is of no use on the release page. It holds the released RookieLedgerSync.exe.
+  store:
+    needs: [build]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: companion
+          path: companion/dist
+      - name: Package for the Microsoft Store
+        shell: pwsh
+        run: companion/store/package.ps1 -Tag $env:GITHUB_REF_NAME -Exe companion/dist/RookieLedgerSync.exe -Out RookieLedgerSync.msix
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: store-package
+          path: RookieLedgerSync.msix
+          if-no-files-found: error
+          retention-days: 30
+
   addon:
     needs: [test, changelog, build]
     runs-on: ubuntu-latest

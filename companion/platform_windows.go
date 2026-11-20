@@ -256,13 +256,25 @@ func lockInstance() (release func(), running bool, err error) {
 	return release, false, nil
 }
 
+// packaged tells whether the program runs from its Microsoft Store package. Windows then installs, starts and
+// removes it (the package's manifest, companion/store/AppxManifest.xml, names the start with the session), and a
+// package may neither copy itself elsewhere nor write the Run key: its registry writes go to a private copy.
+func packaged() bool {
+	var length uint32
+	code, _, _ := kernel32.NewProc("GetCurrentPackageFullName").Call(uintptr(unsafe.Pointer(&length)), 0)
+	return code == uintptr(syscall.ERROR_INSUFFICIENT_BUFFER) // a program outside a package gets APPMODEL_ERROR_NO_PACKAGE
+}
+
 // settle makes this process the one copy that runs for this user, started from the installed place. It returns
-// false when another process is that copy: the installed one it just started, or one that already runs.
-func settle(dir string, st *state, save func()) (release func(), proceed bool) {
+// false when another process is that copy: the installed one it just started, or one that already runs. With
+// renewed, the start brought a setting (--url, --wow-dir): a copy that already runs is asked to leave, since it
+// read its settings when it started.
+func settle(dir string, st *state, renewed bool) (release func(), proceed bool) {
 	self, selfErr := os.Executable()
 	target, targetErr := installedExe()
 	runFrom := self
-	if selfErr == nil && targetErr == nil && !samePath(self, target) {
+	store := packaged()
+	if !store && selfErr == nil && targetErr == nil && !samePath(self, target) {
 		err := installCopy(dir, self, target)
 		if err == nil {
 			// Not hidden: a process started hidden has its first ShowWindow ignored, and its window is the point.
@@ -277,12 +289,18 @@ func settle(dir string, st *state, save func()) (release func(), proceed bool) {
 		}
 		log.Printf("not installed to %s (%v): running from %s", target, err, self)
 	}
-	if selfErr == nil {
+	if !store && selfErr == nil {
 		if err := registerRun(runFrom); err != nil {
 			log.Printf("autostart not installed: %v", err)
 		}
 	}
 	release, running, err := lockInstance()
+	if running && renewed && askToQuit() {
+		for try := 0; running && try < 25; try++ {
+			time.Sleep(200 * time.Millisecond)
+			release, running, err = lockInstance()
+		}
+	}
 	if running {
 		if !showRunning() {
 			notify(text("running") + "\n\n" + describe(st))

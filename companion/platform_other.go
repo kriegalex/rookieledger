@@ -101,7 +101,7 @@ func lockInstance(dir string) (release func(), running bool, err error) {
 }
 
 // settle makes this process the one copy that runs for this user.
-func settle(dir string, st *state, save func()) (release func(), proceed bool) {
+func settle(dir string, st *state, _ bool) (release func(), proceed bool) {
 	release, running, err := lockInstance(dir)
 	if running {
 		notify(text("running") + "\n\n" + describe(st))
