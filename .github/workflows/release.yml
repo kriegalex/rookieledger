@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: CHANGELOG.md is the text of this release
         run: |
           # v0.2.1-beta1 is read against the heading of v0.2.1.
@@ -33,9 +35,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: companion/go.mod
+          # go.mod names 1.26 without a patch: without this, the runner image's cached 1.26.x is taken, which can lag
+          # a security release of net/http or crypto/tls that the published binaries carry.
+          check-latest: true
           cache: false
       - name: Test and build
         working-directory: companion
@@ -46,7 +53,7 @@ jobs:
           flags="-s -w -X main.version=${GITHUB_REF_NAME}"
           GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$flags" -o dist/rookieledger-sync-linux-amd64 .
           GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$flags -H=windowsgui" -o dist/RookieLedgerSync.exe .
-          cd dist && sha256sum * > SHA256SUMS.txt
+          cd dist && sha256sum -- * > SHA256SUMS.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: companion
@@ -64,9 +71,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # the packager reads the tags
+          persist-credentials: false # the packager reaches GitHub with GITHUB_API_TOKEN, never through git
       - uses: BigWigsMods/packager@01e8631a69c69d7654c788d152630d5fed9e3812 # v2.7.0
         env:
-          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GITHUB_OAUTH is the packager's deprecated name for it
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
 
@@ -78,6 +86,8 @@ jobs:
       contents: write # uploads the binaries to the release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # gh below has the token in GH_TOKEN
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: companion
