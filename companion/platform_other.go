@@ -54,7 +54,7 @@ func installAutostart() error {
 	if err != nil {
 		return err
 	}
-	unit := "[Unit]\nDescription=Upload the RookieLedger addon's data to the guild site\nAfter=network-online.target\n\n" +
+	unit := "[Unit]\nDescription=Upload the RookieLedger addon's data to its site\nAfter=network-online.target\n\n" +
 		"[Service]\nExecStart=\"" + exe + "\"\nRestart=on-failure\nRestartSec=60\n\n[Install]\nWantedBy=default.target\n"
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

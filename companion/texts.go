@@ -5,7 +5,7 @@ var texts = map[string][2]string{ // English, French
 		"Aucune donnée RookieLedger trouvée : installer l'add-on, se connecter une fois puis se déconnecter.\nSi WoW est dans un dossier inhabituel, lancer une fois ce programme avec --wow-dir \"<dossier World of Warcraft>\".\n"},
 	"found":       {"Account %s, token: %s\n", "Compte %s, jeton : %s\n"},
 	"refused":     {"  the site refused its last file: %s\n", "  le site a refusé son dernier fichier : %s\n"},
-	"give":        {"Uploads start by themselves on a site open to all. If your guild's site asks for the token, give it to the guild's ledger keeper.\n", "L'envoi commence tout seul sur un site ouvert à tous. Si le site de votre guilde demande le jeton, le donner au responsable du registre de la guilde.\n"},
+	"give":        {"Uploads start by themselves on a site open to all. If a site asks for the token, give it to that site's keeper.\n", "L'envoi commence tout seul sur un site ouvert à tous. Si un site demande le jeton, le donner au responsable de ce site.\n"},
 	"running":     {"RookieLedger Sync is already running.", "RookieLedger Sync est déjà lancé."},
 	"installed":   {"RookieLedger Sync is installed: it starts with your session and uploads the addon's data after each game session.", "RookieLedger Sync est installé : il démarre avec la session et envoie les données de l'add-on après chaque session de jeu."},
 	"noautostart": {"RookieLedger Sync runs now, but could not be set to start with the session: ", "RookieLedger Sync fonctionne, mais le démarrage automatique n'a pas pu être installé : "},

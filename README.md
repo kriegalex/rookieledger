@@ -1,7 +1,8 @@
 # RookieLedger
 
 A World of Warcraft: Forever addon that records what the game shows you while you play, and a small companion app
-that uploads it to your guild's site. The guild then learns together what guides get wrong on Forever:
+that uploads it to the RookieLedger site. Players then learn together what guides get wrong on Forever, and see it
+on a [map](https://rookieledger.21crypto.ch/):
 
 - at which skill a recipe turns yellow, green and grey;
 - how often a yellow or green recipe really gives a skill point;
@@ -45,8 +46,8 @@ does not read it. It holds:
 - where you left the window and the minimap button, and your settings for the monster tooltip.
 
 Gathering and looting places are positions you stood at. They are in your saved file and, if you use the companion
-app, on your guild's site. A site that runs the read API gives them out added up over all members, to whoever may read that API,
-with no word of who stood where; while few members upload, a total is close to what one of them did.
+app, on the site. The site gives them out added up over all players, to whoever reads its API or its map, with no
+word of who stood where; while few players upload, a total is close to what one of them did.
 
 ## The addon
 
@@ -59,7 +60,7 @@ Install it from CurseForge or Wago with any addon manager, or unzip the release 
 | `/ledger show` | Opens or closes the window |
 | `/ledger minimap` | Hides the minimap button or brings it back |
 | `/ledger tooltip` | Switches the loot lines in monster tooltips off or on |
-| `/ledger token` | Shows your upload token, for a guild site that registers tokens by hand |
+| `/ledger token` | Shows your upload token, for a site that registers tokens by hand |
 
 The window lists the last 50 things recorded (the monster or the vein, the items as links, the coin) and the counts
 of this session and in total. The minimap button opens it with a left click and the addon's options with a right click;
@@ -67,7 +68,7 @@ its tooltip gives the counts. The window can also be opened from the game's AddO
 
 Pointing at a monster shows, under its tooltip, what that kind of monster gave you so far: how many you looted, each
 item with how often it was there, the quest items against the corpses looted while the quest wanted them, and the
-coin on average. These are your own figures, the only ones the addon has: it receives nothing from the guild site.
+coin on average. These are your own figures, the only ones the addon has: it receives nothing from the site.
 Under ten corpses a rate reads "3/7", not as a percentage. In the AddOns options you can switch these lines off and
 choose the quality from which items are shown (all of them, or from common, uncommon, rare or epic up).
 
@@ -93,7 +94,7 @@ that file and uploads it.
    Linux: `chmod +x rookieledger-sync-linux-amd64 && ./rookieledger-sync-linux-amd64 --install` (a systemd user unit).
 3. Play. On a site open to all, such as the one this addon was written for, uploads start by themselves after your
    next game session. On a site that registers tokens by hand, type `/ledger token` in game and give the token to
-   your guild's ledger keeper; uploads start once the keeper has registered it.
+   that site's keeper; uploads start once the keeper has registered it.
 
 **Windows warning.** The app is not code-signed, so Windows shows "Windows protected your PC" on first run: choose
 *More info*, then *Run anyway*. The binaries are built by GitHub Actions from the tagged source of this repository;
@@ -106,11 +107,11 @@ block unsigned programs with no bypass.
 | `--once` | One pass, then exits |
 | `--install` / `--uninstall` | Adds or removes the start with your session (Windows: `--uninstall` also stops and removes the installed copy) |
 | `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself (remembered) |
-| `--url URL` | Another guild's upload address (remembered; `--url default` goes back) |
+| `--url URL` | Another site's upload address (remembered; `--url default` goes back) |
 
 ### What the app sends, and where
 
-- It contacts one address only: the upload site (by default the site of the guild this addon was written for).
+- It contacts one address only: the upload site (by default the RookieLedger site).
 - Until your token is registered, it asks "is this token known?" at most once every 30 minutes and sends nothing else.
 - Once registered, it sends the addon's account-wide saved file
   (`WTF/Account/<account>/SavedVariables/RookieLedger.lua`) when its content has changed, with the token. That file
@@ -122,7 +123,7 @@ The token is the only credential: it is what ties your record to you. Give it to
 keeper of a site that registers tokens by hand; to stop uploading, run `--uninstall`, or ask the keeper to revoke
 the token. The app's log shows only the first six digits of a token.
 
-## Running a site for your own guild
+## Running a site of your own
 
 `server/` is the whole site: an upload service and a read API, Python 3.12 standard library, one SQLite file.
 

@@ -481,7 +481,7 @@ def openapi(prefix="/v1", auth=False):
         paths[path] = get(summary, schema, names, re.findall(r"\{(\w+)\}", path))
     return {"openapi": "3.1.0",
             "info": {"title": "RookieLedger", "version": "1.0.0", "license": {"name": "MIT"},
-                     "description": "What a guild's RookieLedger records say together. Read-only, public, totals only. "
+                     "description": "What the players' RookieLedger records say together. Read-only, public, totals only. "
                                     + lc.NOTICE},
             "servers": [{"url": prefix}], "paths": paths, "security": [{"key": []}] if auth else [],
             "components": {"schemas": SCHEMAS, "securitySchemes": {"key": {

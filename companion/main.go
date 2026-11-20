@@ -1,4 +1,4 @@
-// rookieledger-sync uploads the RookieLedger addon's saved file to the guild site whenever the game has rewritten it
+// rookieledger-sync uploads the RookieLedger addon's saved file to the RookieLedger site whenever the game has rewritten it
 // (at logout or /reload). It needs no settings: it finds the WoW Forever folder, reads the upload token the addon
 // stored in the file, and sends the file with it. The site accepts a token only once its owner has registered it;
 // until then this program asks "is my token known?" at most every 30 minutes and sends nothing else.
@@ -9,7 +9,7 @@
 //	rookieledger-sync --status    print the files found and their tokens, then exit
 //	rookieledger-sync --once      one pass, then exit
 //	  --wow-dir DIR   the "World of Warcraft" folder, when it is not found by itself (remembered)
-//	  --url URL       the upload address (remembered; "default" goes back to the guild site)
+//	  --url URL       the upload address (remembered; "default" goes back to the RookieLedger site)
 package main
 
 import (
@@ -60,7 +60,7 @@ type state struct {
 	Installed bool                 `json:"installed,omitempty"`
 }
 
-// uploadURL is where this installation uploads: the address given once with --url, else the guild site.
+// uploadURL is where this installation uploads: the address given once with --url, else the RookieLedger site.
 func (st *state) uploadURL() string {
 	if st.URL != "" {
 		return st.URL
@@ -223,7 +223,7 @@ func (s *syncer) registered(token string) bool {
 		log.Printf("token %s… is registered", token[:6])
 	case code == http.StatusUnauthorized:
 		// Never the whole token: this log is what a member pastes when asking why nothing uploads.
-		log.Printf("token %s… not accepted yet: if the site registers tokens by hand, /ledger token in game shows it, to give to the guild's ledger keeper", token[:6])
+		log.Printf("token %s… not accepted yet: if the site registers tokens by hand, /ledger token in game shows it, to give to that site's keeper", token[:6])
 	default:
 		log.Printf("unexpected answer %d to the status check", code)
 	}
@@ -325,7 +325,7 @@ func describe(st *state) string {
 
 func main() {
 	wowDir := flag.String("wow-dir", "", `the "World of Warcraft" folder`)
-	url := flag.String("url", "", `upload address, remembered ("default": the guild site)`)
+	url := flag.String("url", "", `upload address, remembered ("default": the RookieLedger site)`)
 	once := flag.Bool("once", false, "one pass, then exit")
 	install := flag.Bool("install", false, "start with the session, then watch")
 	uninstall := flag.Bool("uninstall", false, "remove the autostart")

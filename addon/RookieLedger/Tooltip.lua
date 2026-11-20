@@ -5,7 +5,7 @@
 --     Darkhound Blood (quest)           3/7
 --     Coin                          15 copper
 --
--- The figures are this account's own record, the only one the addon has: it receives nothing from the guild site.
+-- The figures are this account's own record, the only one the addon has: it receives nothing from the site.
 -- Under MIN_CORPSES corpses a rate is told as "3 of 7", not as a percentage that so few corpses cannot carry.
 -- ns.here.tooltip (per character) holds the two settings: off, and from, the lowest item quality shown.
 local _, ns = ...

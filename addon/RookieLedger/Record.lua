@@ -22,7 +22,7 @@
 --       while objective j of the quest was still open, k those that held the item, t how many of it they held.
 --       The corpse that first showed the item for that quest is in none of them: it is how the link was learned.
 -- Only numbers: a record holds no name and no text. Every value only ever grows. Nothing of it is sent in game: the
--- game writes it to the saved file, and the companion app uploads that file to the guild site, where
+-- game writes it to the saved file, and the companion app uploads that file to the site, where
 -- server/ledger_common.py checks the same shape and the same bounds.
 local _, ns = ...
 

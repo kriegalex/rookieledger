@@ -1,5 +1,5 @@
 // The map page of RookieLedger: the world of the game as one picture, cut in tiles (world.json and tiles/, made by
-// tools/maps/build_world.py), and on it what the read API says the guild's records hold: where veins and herbs were
+// tools/maps/build_world.py), and on it what the read API says the players' records hold: where veins and herbs were
 // gathered and monsters looted, and what each gave.
 //
 // Everything shown as text comes from this site's own files (names.json, world.json) or is a number of the API:
@@ -13,7 +13,12 @@ const DEEPEST = 5;                 // window pixels per pixel of the picture, at
 const GLIDE = 260;                 // milliseconds a zoom or a jump takes
 const AT_ONCE = 8;                 // tiles asked of the server at the same time
 const RETRIES = 4;                 // times a tile the server refused is asked for again
-const COLOURS = { mining: "#e8762c", herbalism: "#3fa34d", creature: "#c0392b" };
+// Pins are told apart from the ground and from each other. Their colours were held against the colours of the map
+// itself, every tile of it: none of the three is near any ground the minimap or the painted maps show (CIE76
+// distance under 40 for 0.0 % of their pixels; the orange, green and dark red used before were that near 12 %, 3 %
+// and 7 % of the minimap's). Each kind also has a shape of its own and a light rim inside a dark one, for who tells
+// red from green badly and for the few places a colour still falls on its like.
+const COLOURS = { mining: "#19d3ff", herbalism: "#9dff3a", creature: "#ff2a2a" };
 const KINDS = { mining: "Filon", herbalism: "Plante", creature: "Monstre" };
 const QUALITIES = ["Médiocre", "Commun", "Inhabituel", "Rare", "Épique", "Légendaire"];
 
@@ -186,16 +191,57 @@ function draw() {
     if (!shown(pin)) continue;
     const [sx, sy] = screen(pin);
     if (sx < -10 || sy < -10 || sx > w + 10 || sy > h + 10) continue;
-    ctx.beginPath();
-    ctx.arc(sx, sy, pin === chosen ? radius + 3 : radius, 0, 2 * Math.PI);
-    ctx.fillStyle = COLOURS[pin.layer];
-    ctx.globalAlpha = pin === chosen ? 1 : 0.88;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.lineWidth = pin === chosen ? 2.5 : 1;
-    ctx.strokeStyle = pin === chosen ? "#fff" : "rgba(0,0,0,.7)";
+    outline(pin.layer, sx, sy, pin === chosen ? radius + 3 : radius);
+    ctx.lineJoin = "round";
+    ctx.lineWidth = pin === chosen ? 6 : 4;
+    ctx.strokeStyle = "rgba(20,14,8,.85)";
+    ctx.stroke();                                   // the dark rim, widest, mostly hidden by the next
+    ctx.lineWidth = pin === chosen ? 3.5 : 2;
+    ctx.strokeStyle = "#fff";
     ctx.stroke();
+    ctx.fillStyle = COLOURS[pin.layer];
+    ctx.fill();
   }
+  float();
+}
+
+// Keeps the detail card beside the pin it is about, as the map moves: to its right, or to its left where the right
+// has no room, and inside the window. While the pin is out of the window the card is out of sight. On a narrow
+// screen the card is a sheet at the bottom (the style sheet's doing) and stays there.
+function float() {
+  const card = $("detail");
+  if (!chosen || card.hidden) return;
+  if (window.matchMedia("(max-width: 700px)").matches) {
+    card.style.left = card.style.top = card.style.right = card.style.visibility = "";
+    return;
+  }
+  const [sx, sy] = screen(chosen), w = canvas.clientWidth, h = canvas.clientHeight;
+  const width = card.offsetWidth, height = card.offsetHeight, gap = 18, edge = 8;
+  let left = sx + gap;
+  if (left + width > w - edge) left = sx - gap - width;
+  left = Math.max(edge, Math.min(w - width - edge, left));
+  const top = Math.max(edge, Math.min(h - height - edge, sy - Math.min(height / 2, 44)));
+  card.style.left = left + "px";
+  card.style.top = top + "px";
+  card.style.right = "auto";
+  card.style.visibility = sx < -12 || sy < -12 || sx > w + 12 || sy > h + 12 ? "hidden" : "";
+}
+
+// The outline of a pin about a point: a diamond for a vein, a disc for a herb, a triangle for a monster, of about
+// the same area.
+function outline(layer, x, y, r) {
+  ctx.beginPath();
+  if (layer === "mining") {
+    const d = r * 1.25;
+    ctx.moveTo(x, y - d); ctx.lineTo(x + d, y); ctx.lineTo(x, y + d); ctx.lineTo(x - d, y);
+  } else if (layer === "creature") {
+    const d = r * 1.35;
+    ctx.moveTo(x, y - d); ctx.lineTo(x + d * 0.92, y + d * 0.62); ctx.lineTo(x - d * 0.92, y + d * 0.62);
+  } else {
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    return;
+  }
+  ctx.closePath();
 }
 
 function schedule() {
@@ -471,7 +517,7 @@ $("search").addEventListener("input", async (event) => {
   count();
   schedule();
   // The monsters that dropped one of the items: one question per item, for the few items a search of three letters
-  // or more names among those the guild ever saw.
+  // or more names among those ever recorded.
   if (wanted.length < 3) return;
   const known = await knownItems();
   for (const id of ids.filter((id) => known.has(id)).slice(0, 12)) {
