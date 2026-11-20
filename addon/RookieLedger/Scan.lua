@@ -199,19 +199,31 @@ end
 
 -- Skill-ups ------------------------------------------------------------------
 
-local craft   -- the craft under way: { recipe, skillLine, rank, colour, done }
+local craft      -- the craft under way: { recipe, skillLine, rank, colour, cast, after, late }
+local settling   -- the craft done last, until the points it gave are read
 
+-- Reads the points of the craft that is done. The client gives them a moment after the craft, and in a queue after
+-- the next craft has started (docs/client-behaviour.md, section 10): so the skill read when that next craft started
+-- is still the skill before these points, and is read again here, where they are in.
 local function ResolveCraft()
-    local c = craft
-    if not c or not c.done then
+    local c = settling
+    if not c then
         return
     end
-    craft = nil
+    settling = nil
     local rank = Ranks()[c.skillLine]
-    if not rank or rank[2] ~= 0 then
+    local now = rank and rank[2] == 0 and rank[1] or nil
+    if craft and craft.after == c then
+        if now then
+            craft.after, craft.rank, craft.late = nil, now, true
+        else
+            craft = nil   -- the skill it is made at cannot be told
+        end
+    end
+    if not now then
         return
     end
-    local ups = rank[1] - c.rank
+    local ups = now - c.rank
     if ups < 0 or ups > 5 then
         return
     end
@@ -223,7 +235,6 @@ local function ResolveCraft()
 end
 
 local function CraftStarted(recipe)
-    ResolveCraft()   -- the previous craft of a queue
     local entry = ns.db.own.c[recipe]
     if not entry then
         return nil
@@ -234,20 +245,31 @@ local function CraftStarted(recipe)
         return nil
     end
     craft = { recipe = recipe, skillLine = entry[1], rank = rank[1], colour = colour }
+    if settling and settling.skillLine == craft.skillLine then
+        craft.after = settling   -- the craft before it in a queue: its points may still move this one's skill
+    end
     return craft
 end
 
 local function CraftSucceeded(recipe)
-    if not craft or craft.recipe ~= recipe or craft.done then
+    if not craft or craft.recipe ~= recipe then
         -- No cast bar came first (an instant craft): take the state as it is now.
         if not CraftStarted(recipe) then
             return
         end
     end
-    craft.done = true
+    ResolveCraft()   -- the craft before, if a cast shorter than UPS_DELAY left it unread: its points are in by now
     local mine = craft
+    if not mine then
+        return
+    end
+    if mine.late then
+        -- It started before the window showed the colours of its skill: by now the window has followed.
+        mine.colour = RecipeColour(recipe) or mine.colour
+    end
+    craft, settling = nil, mine
     C_Timer.After(UPS_DELAY, function()
-        if craft == mine then
+        if settling == mine then
             ResolveCraft()
         end
     end)
@@ -260,7 +282,7 @@ local function OtherCast(mine, cast)
 end
 
 local function CraftFailed(recipe, cast)
-    if craft and craft.recipe == recipe and not craft.done and not OtherCast(craft.cast, cast) then
+    if craft and craft.recipe == recipe and not OtherCast(craft.cast, cast) then
         craft = nil
     end
 end

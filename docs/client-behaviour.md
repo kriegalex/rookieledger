@@ -22,7 +22,8 @@ Sections 1 to 5 come from [`tools/Probe.lua`](../tools/Probe.lua) and section 8 
 [`tools/QuestProbe.lua`](../tools/QuestProbe.lua): files added to the installed addon for the time of the
 observation, which register the events below, call the functions below at fixed moments and write one line per
 answer to a saved variable. They record nothing in the ledger. To repeat an observation, follow the steps at the top
-of the file. Sections 6 and 7 come from playing with the addon and reading its saved files afterwards.
+of the file. Sections 6 and 7 come from playing with the addon and reading its saved files afterwards. Section 10 comes
+from a line typed in chat that prints the three events with the skill, read off a screenshot.
 
 Nothing here was observed in a dungeon, in a group, or outside that starting zone.
 
@@ -172,6 +173,29 @@ target, in the open world:
 So the place the addon notes for a looted corpse is the player's own, taken when the loot window opens: within
 looting reach of where the monster died. Where it stood before it was pulled cannot be read.
 
+## 10. Crafts in a queue and the skill point
+
+Five crafts of one recipe, queued in the profession window (Leatherworking from skill 1, "Cuir léger", every craft
+giving a point). A line of chat was printed at each event, with the skill `GetProfessionInfo` gave at that moment:
+
+| Event | Skill read |
+|---|---|
+| `UNIT_SPELLCAST_START` of craft 1 | 1 |
+| `UNIT_SPELLCAST_SUCCEEDED` of craft 1 | 1 |
+| `UNIT_SPELLCAST_START` of craft 2 | 1 |
+| `CHAT_MSG_SKILL` (the point of craft 1) | 2 |
+| `UNIT_SPELLCAST_SUCCEEDED` of craft 2 | 2 |
+| `UNIT_SPELLCAST_START` of craft 3 | 2 |
+| `CHAT_MSG_SKILL` (the point of craft 2) | 3 |
+
+and so on to the fifth craft, whose point came after its `UNIT_SPELLCAST_SUCCEEDED` with no cast after it.
+
+- The point of a craft comes after the craft's `UNIT_SPELLCAST_SUCCEEDED`, and in a queue after the
+  `UNIT_SPELLCAST_START` of the next craft: 4 of 4 crafts that had a craft after them.
+- It is in before that next craft's `UNIT_SPELLCAST_SUCCEEDED`: 4 of 4.
+- So the skill read when a queued craft starts is the skill before the point of the craft before it. The addon
+  reads it again once that point is in (`ResolveCraft` in `Scan.lua`).
+
 ## Not verified
 
 Read elsewhere, not tried:
@@ -190,6 +214,9 @@ Reasoned from the observations, not seen directly:
 
 Never met:
 
+- How long after a craft its point comes when no craft follows: the addon waits 1.2 s. The one case seen came
+  before the next line of chat, and was not timed.
+- A queue of a recipe that does not give a point at every craft, and a craft shorter than that wait.
 - Whether a monster still gives a quest item once the objective is reached. Both observations ended at the
   objective's last item.
 - An item that two quests of the log ask for at once.

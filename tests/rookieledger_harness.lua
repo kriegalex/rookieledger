@@ -394,6 +394,35 @@ A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 585)
 run(3)
 check("an interrupted craft is still dropped", own.s["7418:127:2"] == nil)
 
+-- A queue as the client runs it: a craft's point comes after the next craft has started. Each craft is counted at
+-- the skill it was made at, with its own point; then the same with casts shorter than the wait for the points.
+local function countedAt(skill)
+    for colour = 0, 3 do
+        local counts = own.s["7418:" .. skill .. ":" .. colour]
+        if counts then return counts[1], counts[2] end
+    end
+end
+for round, cast in ipairs({ 2, 0.3 }) do
+    local first = A.profs[1].rank
+    for n = 1, 3 do
+        A.fire("UNIT_SPELLCAST_START", "player", "queue-" .. round .. n, 7418)
+        if n > 1 then
+            A.profs[1].rank = first + n - 1   -- the point of the craft before
+            A.fire("SKILL_LINES_CHANGED")
+        end
+        run(cast)
+        A.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "queue-" .. round .. n, 7418)
+    end
+    A.profs[1].rank = first + 3
+    A.fire("SKILL_LINES_CHANGED")
+    run(3)
+    for n = 0, 2 do
+        local crafts, ups = countedAt(first + n)
+        check("craft " .. n + 1 .. " of a queue has its own point (casts of " .. cast .. " s)", crafts == 1 and ups == 1)
+    end
+    check("a queue counts no craft at the skill it ends at (casts of " .. cast .. " s)", countedAt(first + 3) == nil)
+end
+
 -- A corpse looted while the disenchant is still being cast is not its result, whether the client names the loot's
 -- source or not.
 for _, named in ipairs({ true, false }) do
@@ -600,18 +629,18 @@ A.lootSource = corpse(3100, "0000000F01")
 lootWindow({ { coin = "4 Cuivre" }, { 2589, 2 } })
 local ogre = own.m[3100]
 check("the session counts what was recorded since login", A.ns.session.m == 13 and A.ns.session.g == 5
-    and A.ns.session.d == 5 and A.ns.session.s == 4 and A.ns.session.c == 7, ("m %s g %s d %s s %s c %s"):format(
+    and A.ns.session.d == 5 and A.ns.session.s == 10 and A.ns.session.c == 13, ("m %s g %s d %s s %s c %s"):format(
     tostring(A.ns.session.m), tostring(A.ns.session.g), tostring(A.ns.session.d), tostring(A.ns.session.s), tostring(A.ns.session.c)))
-check("the log names a corpse nobody points at by its id", #log == 30
-    and log[30][3] == "créature 3100 : |Hitem:2589::|h[m]|h x2, 4 cuivre", #log .. " " .. log[#log][3])
+check("the log names a corpse nobody points at by its id", #log == 38
+    and log[38][3] == "créature 3100 : |Hitem:2589::|h[m]|h x2, 4 cuivre", #log .. " " .. log[#log][3])
 local token, id, seenUpTo = A.db.token, A.db.id, A.db.own.c[7421][3]
 A.version, A.printed = "v0.2.1", {}
 A.load(A.db)
 check("a reload keeps the token and the record", A.db.token == token and A.db.id == id and A.db.own.c[7421][3] == seenUpTo)
 check("every login says the version, and nothing more once the token is made", #A.printed == 1
     and A.printed[1]:find("v0.2.1 chargé. /ledger pour le détail.", 1, true), A.printed[1])
-check("a reload keeps the log and starts the session's counts again", #A.env.RookieLedgerLocal.log == 30
-    and A.env.RookieLedgerLocal.log[30][3]:find("créature 3100", 1, true) and next(A.ns.session) == nil)
+check("a reload keeps the log and starts the session's counts again", #A.env.RookieLedgerLocal.log == 38
+    and A.env.RookieLedgerLocal.log[38][3]:find("créature 3100", 1, true) and next(A.ns.session) == nil)
 A.version = nil
 A.load(A.db)
 check("a client that tells no version is a copy of the repository too", A.ns.version == "dev")
