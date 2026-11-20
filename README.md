@@ -262,7 +262,8 @@ python3 -m http.server 8080 --directory build/site                              
   names of monsters, veins or herbs: the server tells them to the client as they are met. Monsters are named from
   the install's own cache of what its player has met, so a monster only other members have met shows by its
   number; a vein or a herb is named after what it gives.
-- Places on a map that is not a zone of the two continents (a city, a dungeon) are not shown.
+- Places on a map that is not a zone of the two continents (a dungeon, an instance) are not shown. A city's places
+  are, where the city lies on its continent.
 - The lettering of the maps is part of the pictures: where zones meet, a neighbour's name can show twice.
 
 Serve `build/site` as static files. The page asks the API from another name than its own, so a content security

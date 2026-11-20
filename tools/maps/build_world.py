@@ -365,7 +365,8 @@ def main():
     far, near, land, continents, zones = pictures(world)
     args.out.mkdir(parents=True, exist_ok=True)
     top = cut(far, near, args.out / "tiles")
-    deep = cut_deep(world, near, land, args.out / "tiles", top + 1)
+    # The minimap is read from an install only: from the mirror its thousands of squares would be refused.
+    deep = cut_deep(world, near, land, args.out / "tiles", top + 1) if args.install else []
     rounded = lambda box: [round(v, 1) for v in box]
     described = {
         "build": world.data.build, "tile": TILE, "size": near.size, "max_zoom": top, "deep": deep,

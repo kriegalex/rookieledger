@@ -30,13 +30,15 @@ let world = null;                  // world.json
 let names = { items: {}, creatures: {} };   // names.json
 let view = { x: 0, y: 0, scale: 1 };   // the pixel of the picture at the centre of the window, and window pixels per pixel of it
 let glide = null;                  // the view being moved to: { from, to, since }
-const pins = [];                   // { x, y (pixels of the picture), layer, id, map, u, v, count }
+const pins = [];                   // { x, y (pixels of the picture), layer, id, key ("layer:id"), map, u, v, count }
 const nodes = new Map();           // node id -> the API's Node
 const details = new Map();         // "creature:1674" -> the API's Creature, once asked for
 const layers = { mining: true, herbalism: true, creature: true };
 let matches = null;                // while searching: the "layer:id" that match
+let sought = null;                 // while searching: { wanted, items } (what was typed, the ids of the items it names)
 const tiles = new Map();           // "zoom/x/y" -> Image
 let chosen = null;                 // the pin whose detail is open
+let opened = 0;                    // details opened so far: an answer that comes back for an older one is dropped
 let drawn = false;
 
 // --- the world: from a place of the API to a point of the picture -----------------------------------------------
@@ -143,8 +145,9 @@ function drawTiles(zoom) {
   return whole;
 }
 
+// Asked of every pin at every frame and every move of the mouse: its key is made once, not here.
 function shown(pin) {
-  return layers[pin.layer] && (!matches || matches.has(pin.layer + ":" + pin.id));
+  return layers[pin.layer] && (!matches || matches.has(pin.key));
 }
 
 function screen(pin) {
@@ -252,6 +255,7 @@ function schedule() {
 
 // Zooms by a factor about a point of the window, gliding. A zoom asked for during another carries on from its goal.
 function zoomAt(factor, px, py, at_once) {
+  if (!world) return;
   const w = canvas.clientWidth, h = canvas.clientHeight;
   const goal = Math.min(DEEPEST, Math.max(least(), (glide && glide.anchor ? glide.to.scale : view.scale) * factor));
   const anchor = { x: view.x + (px - w / 2) / view.scale, y: view.y + (py - h / 2) / view.scale, dx: px - w / 2, dy: py - h / 2 };
@@ -292,6 +296,7 @@ canvas.addEventListener("pointerdown", (event) => {
 canvas.addEventListener("pointermove", (event) => {
   const before = pointers.get(event.pointerId);
   if (!before) return hover(event);
+  if (!world) return;
   pointers.set(event.pointerId, [event.clientX, event.clientY]);
   if (pointers.size === 1) {
     view.x -= (event.clientX - before[0]) / view.scale;
@@ -433,7 +438,9 @@ function yields(rows, total) {
     itemCell(y.item), rate(y.times, total), y.average_quantity > 1.05 ? "×" + y.average_quantity.toFixed(1) : ""]);
 }
 
+// A monster's detail comes from the API: an answer that arrives once another card was opened is not shown.
 async function open(pin) {
+  const mine = ++opened;
   chosen = pin;
   schedule();
   const body = $("detail-body");
@@ -441,21 +448,27 @@ async function open(pin) {
   $("detail").hidden = false;
   if (pin.layer !== "creature") {
     const node = nodes.get(pin.id);
+    // A kind first gathered after the page asked for the kinds is not among them yet.
+    if (!node) { body.append(element("div", `Récolté ${pin.count}× ici.`, "sub")); return; }
     body.append(element("div", `Récolté ${pin.count}× ici, ${node.gathers}× en tout, en ${node.place_count} endroits.`, "sub"),
       table(["Donne", "Fréquence", ""], yields(node.materials, node.gathers)));
     return;
   }
   const key = "creature:" + pin.id;
   if (!details.has(key)) {
-    body.append(element("div", "Chargement…", "sub"));
+    const loading = element("div", "Chargement…", "sub");
+    body.append(loading);
+    let answer;
     try {
-      details.set(key, await get(`/creatures/${pin.id}`));
+      answer = await get(`/creatures/${pin.id}`);
     } catch (error) {
-      body.lastChild.textContent = "Le détail n'a pas pu être chargé.";
+      // Only into the detail that asked: another may be open by now, or the same one opened again.
+      if (mine === opened) loading.textContent = "Le détail n'a pas pu être chargé.";
       return;
     }
-    if (chosen !== pin) return;
-    body.lastChild.remove();
+    details.set(key, answer);
+    if (mine !== opened) return;
+    loading.remove();
   }
   const c = details.get(key);
   body.append(element("div", `Fouillé ${pin.count}× ici, ${c.corpses}× en tout.`
@@ -466,6 +479,7 @@ async function open(pin) {
       itemCell(q.item, "(quête)"), rate(q.drops, q.chances), ""])));
   }
   if (!c.drops.length && !c.quest_drops.length) body.append(element("div", "Aucun objet relevé.", "sub"));
+  schedule();                       // the card has grown since it was placed: place it again
 }
 
 function pick(event) {
@@ -475,6 +489,7 @@ function pick(event) {
 }
 
 function closeDetail() {
+  opened++;
   chosen = null;
   $("detail").hidden = true;
   schedule();
@@ -486,7 +501,7 @@ $("close").addEventListener("click", closeDetail);
 function count() {
   const totals = { mining: 0, herbalism: 0, creature: 0 };
   for (const pin of pins) {
-    if (!matches || matches.has(pin.layer + ":" + pin.id)) totals[pin.layer]++;
+    if (!matches || matches.has(pin.key)) totals[pin.layer]++;
   }
   for (const [layer, n] of Object.entries(totals)) $("n-" + layer).textContent = n;
 }
@@ -497,21 +512,23 @@ for (const box of document.querySelectorAll("[data-layer]")) {
 
 // A search matches a vein or a herb by what it gives, a monster by its name, its number or what it dropped (asked
 // of the API: its items are not loaded until then).
+function fits(pin) {
+  const { wanted, items } = sought;
+  if (pin.layer === "creature") return String(pin.id) === wanted || creatureName(pin.id).toLowerCase().includes(wanted);
+  const node = nodes.get(pin.id);
+  return Boolean(node && node.materials.some((m) => items.has(m.item))) || nodeName(pin.id).toLowerCase().includes(wanted);
+}
+
 let searching = 0;
 $("search").addEventListener("input", async (event) => {
   const wanted = event.target.value.trim().toLowerCase();
   const mine = ++searching;
-  if (!wanted) { matches = null; count(); schedule(); return; }
-  const found = new Set();
+  if (!wanted) { matches = sought = null; count(); schedule(); return; }
   const ids = Object.entries(names.items).filter(([, [name]]) => name.toLowerCase().includes(wanted)).map(([id]) => Number(id));
-  const items = new Set(ids);
-  for (const [id, node] of nodes) {
-    if (node.materials.some((m) => items.has(m.item)) || nodeName(id).toLowerCase().includes(wanted)) found.add(node.kind + ":" + id);
-  }
+  sought = { wanted, items: new Set(ids) };
+  const found = new Set();
   for (const pin of pins) {
-    if (pin.layer === "creature" && (String(pin.id) === wanted || creatureName(pin.id).toLowerCase().includes(wanted))) {
-      found.add("creature:" + pin.id);
-    }
+    if (fits(pin)) found.add(pin.layer + ":" + pin.id);
   }
   matches = found;
   count();
@@ -532,16 +549,31 @@ $("search").addEventListener("input", async (event) => {
 
 let itemsSeen = null;
 function knownItems() {
-  itemsSeen = itemsSeen || all("/items").then((rows) => new Set(rows.map((row) => row.id)), () => new Set());
+  // A question that failed is asked again at the next search: it does not stand for "no item" from then on.
+  itemsSeen = itemsSeen || all("/items").then((rows) => new Set(rows.map((row) => row.id)),
+    () => { itemsSeen = null; return new Set(); });
   return itemsSeen;
 }
 
 // --- the API ----------------------------------------------------------------------------------------------------
 
+// The API's host limits how fast one address may ask, as the site's does: a question it refuses is asked again a
+// little later, each time later, a few times. Its refusal can come without the API's own headers, which the browser
+// then reports as a failed fetch, not as an answer.
 async function get(path) {
-  const response = await fetch(API + path, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(path + ": " + response.status);
-  return response.json();
+  for (let tries = 1; ; tries++) {
+    let response = null;
+    try {
+      response = await fetch(API + path, { headers: { Accept: "application/json" } });
+    } catch (error) {
+      if (tries > RETRIES) throw error;
+    }
+    if (response) {
+      if (response.ok) return response.json();
+      if ((response.status !== 429 && response.status !== 503) || tries > RETRIES) throw new Error(path + ": " + response.status);
+    }
+    await new Promise((resume) => setTimeout(resume, 700 * 2 ** tries));
+  }
 }
 
 async function all(path) {
@@ -557,29 +589,50 @@ async function all(path) {
 
 function pin(layer, id, row, count) {
   const point = toWorld(row.map, row.x, row.y);
-  if (point) pins.push({ ...point, layer, id, map: row.map, u: row.x, v: row.y, count });
+  if (!point) return;
+  const made = { ...point, layer, id, key: layer + ":" + id, map: row.map, u: row.x, v: row.y, count };
+  pins.push(made);
+  // A search typed while the places were still coming in also takes those that come after it.
+  if (matches && sought && fits(made)) matches.add(made.key);
 }
 
+// Returns how many places lie on maps the page does not show, and how many maps could not be loaded: one map the
+// API refuses leaves the others on the page.
 async function load() {
-  let elsewhere = 0;
+  let elsewhere = 0, missed = 0;
   for (const node of await all("/nodes")) nodes.set(node.id, node);
   for (const map of await all("/maps")) {
     if (!world.zones[map.id]) { elsewhere += map.node_place_count + map.creature_place_count; continue; }
-    const [veins, beasts] = await Promise.all([
-      map.node_place_count ? all(`/maps/${map.id}/node-places`) : [],
-      map.creature_place_count ? all(`/maps/${map.id}/creature-places`) : []]);
+    let veins, beasts;
+    try {
+      [veins, beasts] = await Promise.all([
+        map.node_place_count ? all(`/maps/${map.id}/node-places`) : [],
+        map.creature_place_count ? all(`/maps/${map.id}/creature-places`) : []]);
+    } catch (error) {
+      missed++;
+      continue;
+    }
     for (const row of veins) pin(row.kind, row.node, row, row.gathers);
     for (const row of beasts) pin("creature", row.creature, row, row.corpses);
     count();
     schedule();
   }
-  return elsewhere;
+  return { elsewhere, missed };
 }
 
 // --- where the page was left: in the address, so that a link shows the same thing ------------------------------
 
+// Written once the view has stayed still a moment: browsers refuse (Firefox and Safari by throwing) an address
+// rewritten as often as a touchpad or a pinch moves the view.
+let remembering = 0;
 function remember() {
-  if (world) history.replaceState(null, "", `#${view.x.toFixed(0)}/${view.y.toFixed(0)}/${view.scale.toFixed(3)}`);
+  if (!world) return;
+  clearTimeout(remembering);
+  remembering = setTimeout(() => {
+    try {
+      history.replaceState(null, "", `#${view.x.toFixed(0)}/${view.y.toFixed(0)}/${view.scale.toFixed(3)}`);
+    } catch (error) { /* refused all the same: the address keeps the view before */ }
+  }, 300);
 }
 
 function recalled() {
@@ -607,13 +660,14 @@ async function start() {
     button.addEventListener("click", () => goTo(c.box));
     $("continents").append(button);
   }
-  resize();
-  // With no view in the address, the page opens on the whole world.
+  // With no view in the address, the page opens on the whole world. The view is set before the first drawing, which
+  // would otherwise ask for the tiles of a view no one sees.
   if (!recalled()) view = clamp({ x: world.size[0] / 2, y: world.size[1] / 2, scale: 0 });
-  schedule();
+  resize();
   try {
-    const elsewhere = await load();
-    $("status").textContent = `${pins.length} endroits relevés` + (elsewhere ? `, ${elsewhere} hors de ces cartes` : "") + ".";
+    const { elsewhere, missed } = await load();
+    $("status").textContent = `${pins.length} endroits relevés` + (elsewhere ? `, ${elsewhere} hors de ces cartes` : "")
+      + (missed ? ` ; ${missed} cartes n'ont pas pu être chargées` : "") + ".";
   } catch (error) {
     $("status").textContent = "Les relevés n'ont pas pu être chargés : la carte est vide pour l'instant.";
   }

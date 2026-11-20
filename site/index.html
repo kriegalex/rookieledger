@@ -24,10 +24,12 @@ button, input[type=search] { font: inherit; color: inherit; }
 #search { width: 100%; padding: 5px 7px; border: 1px solid var(--edge); border-radius: 4px; background: #fbf3dc; margin-bottom: 8px; }
 .layer { display: flex; align-items: center; gap: 7px; padding: 2px 0; cursor: pointer; }
 .layer .count { margin-left: auto; color: var(--dim); font-size: 12px; }
-.dot { width: 12px; height: 12px; display: inline-block; flex: none; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
-.dot.herb { border-radius: 50%; }
-.dot.mine { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
-.dot.beast { clip-path: polygon(50% 4%, 100% 92%, 0 92%); }
+/* The shape is cut on an inner box: a clip on the box itself would also cut away its shadow, which is drawn first. */
+.dot { position: relative; width: 12px; height: 12px; display: inline-block; flex: none; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+.dot::before { content: ""; position: absolute; inset: 0; }
+.dot.herb::before { background: var(--herb); border-radius: 50%; }
+.dot.mine::before { background: var(--mine); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.dot.beast::before { background: var(--beast); clip-path: polygon(50% 4%, 100% 92%, 0 92%); }
 #status { margin-top: 8px; font-size: 12px; color: var(--dim); min-height: 1.4em; }
 #where { left: 12px; bottom: 12px; padding: 4px 9px; font-size: 12px; }
 #credit { right: 12px; bottom: 12px; padding: 4px 9px; font-size: 11px; color: var(--dim); max-width: 60%; }
@@ -60,9 +62,9 @@ button, input[type=search] { font: inherit; color: inherit; }
   <p>Ce que les joueurs ont vraiment trouvé, et où.</p>
   <div id="continents"></div>
   <input id="search" type="search" placeholder="Chercher un objet, un monstre…" autocomplete="off">
-  <label class="layer"><input type="checkbox" data-layer="mining" checked><span class="dot mine" style="background:var(--mine)"></span>Filons<span class="count" id="n-mining"></span></label>
-  <label class="layer"><input type="checkbox" data-layer="herbalism" checked><span class="dot herb" style="background:var(--herb)"></span>Plantes<span class="count" id="n-herbalism"></span></label>
-  <label class="layer"><input type="checkbox" data-layer="creature" checked><span class="dot beast" style="background:var(--beast)"></span>Monstres<span class="count" id="n-creature"></span></label>
+  <label class="layer"><input type="checkbox" data-layer="mining" checked><span class="dot mine"></span>Filons<span class="count" id="n-mining"></span></label>
+  <label class="layer"><input type="checkbox" data-layer="herbalism" checked><span class="dot herb"></span>Plantes<span class="count" id="n-herbalism"></span></label>
+  <label class="layer"><input type="checkbox" data-layer="creature" checked><span class="dot beast"></span>Monstres<span class="count" id="n-creature"></span></label>
   <div id="status" role="status">Chargement…</div>
 </div>
 <div id="detail" class="card" hidden><button id="close" aria-label="Fermer">×</button><div id="detail-body"></div></div>

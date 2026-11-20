@@ -32,14 +32,14 @@ class GameData:
             # The mirror answers 200 with an empty or tiny body for a file it does not have.
             if len(data) < least:
                 raise LookupError(f"{url}: {len(data)} bytes, not a file")
-            path.write_bytes(data)
+            _write(path, data)
             time.sleep(PAUSE)
         return path
 
     def table(self, name):
-        """The rows of a client table, as dicts of strings."""
+        """The rows of a client table, as dicts of strings. Kept per build: another build reads its own."""
         path = self._get(f"{SOURCE}/db2/{name}/csv?build={self.build}&locale={self.locale}",
-                         self.cache / "db2" / f"{name}.{self.locale}.csv", 40)
+                         self.cache / "db2" / f"{name}.{self.build}.{self.locale}.csv", 40)
         with open(path, encoding="utf-8", newline="") as f:
             return list(csv.DictReader(f))
 
@@ -50,7 +50,15 @@ class GameData:
             return self._get(f"{SOURCE}/api/casc/{int(file_id)}?download&version={self.build}", path, 100)
         if not path.exists():
             try:
-                path.write_bytes(self.install.read(int(file_id)))
+                _write(path, self.install.read(int(file_id)))
             except KeyError:
                 raise LookupError(f"texture {file_id} is not in the install") from None
         return path
+
+
+def _write(path, data):
+    """Writes a file of the cache whole or not at all: a build stopped halfway leaves no piece of a file that would
+    be taken for the file at the next one."""
+    part = path.with_name(path.name + ".part")
+    part.write_bytes(data)
+    part.replace(path)
