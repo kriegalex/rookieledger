@@ -42,8 +42,9 @@ MAX_ITEMS = 5000            # per kind of creature, as in Record.lua
 MAX_COPPER = 10**7          # per corpse: 1000 gold, far above anything a corpse holds
 MAX_OBJECTIVES = 50         # per quest
 MAX_DEPTH = 8
-MAX_VALUES = 1_000_000      # per file: the game spends 9 bytes or more on a value, so the 8 MiB an upload may hold stay
-                            # under it, while 8 MiB of "0," would otherwise become 4 million table entries in memory
+MAX_VALUES = 250_000        # per file, past which it is refused: six times what a year of one account's play holds.
+                            # Each value costs memory while the file is parsed, most of all an empty table, and
+                            # 8 MiB of "{}," would otherwise become millions of them
 # A token that registered itself (open registration) is not taken at its word. Its record counts in what the site
 # gives out only PROBATION after it registered, and not at all while `doubt` finds it made faster than play allows.
 # The numbers are wide on purpose: they are to be narrowed once real records show what play looks like.

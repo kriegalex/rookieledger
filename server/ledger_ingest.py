@@ -160,8 +160,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(429, {"error": "too many new members right now; the app tries again later"}, close=True)
         data = self.rfile.read(int(length))
         try:
-            # One file is read at a time. A few kB of gzip can unpack to MAX_VALUES empty tables, which take over
-            # 100 MiB while they are parsed: two at once would be more than the service's container may hold.
+            # One file is read at a time. A few kB of gzip can unpack to MAX_VALUES empty tables, which take tens
+            # of MiB while they are parsed: several at once would be more than the service's container may hold.
             with self.server.parsing:
                 if self.headers.get("Content-Encoding") == "gzip":
                     inflater = zlib.decompressobj(31)
