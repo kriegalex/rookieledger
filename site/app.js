@@ -13,6 +13,11 @@ const DEEPEST = 5;                 // window pixels per pixel of the picture, at
 const GLIDE = 260;                 // milliseconds a zoom or a jump takes
 const AT_ONCE = 8;                 // tiles asked of the server at the same time
 const RETRIES = 4;                 // times a tile the server refused is asked for again
+const CELL = 16;                   // window pixels: places of one kind nearer than this are drawn as one mark
+// Where the three kinds each have a mark in one square, the marks are their places' middles and fall on each other:
+// each kind's is drawn a little aside, its own way, and small, so that all three show and the ground between them.
+const ASIDE = { creature: [0, -4.5], herbalism: [-4.5, 3.5], mining: [4.5, 3.5] };
+const NOT_ASIDE = [0, 0];
 // Pins are told apart from the ground and from each other. Their colours were held against the colours of the map
 // itself, every tile of it: none of the three is near any ground the minimap or the painted maps show (CIE76
 // distance under 40 for 0.0 % of their pixels; the orange, green and dark red used before were that near 12 %, 3 %
@@ -20,6 +25,8 @@ const RETRIES = 4;                 // times a tile the server refused is asked f
 // red from green badly and for the few places a colour still falls on its like.
 const COLOURS = { mining: "#19d3ff", herbalism: "#9dff3a", creature: "#ff2a2a" };
 const KINDS = { mining: "Filon", herbalism: "Plante", creature: "Monstre" };
+const MANY = { mining: "filons", herbalism: "plantes", creature: "endroits à monstres" };
+const ORDER = { creature: 0, herbalism: 1, mining: 2 };   // drawn in this order: monsters are everywhere, and go under
 const QUALITIES = ["Médiocre", "Commun", "Inhabituel", "Rare", "Épique", "Légendaire"];
 
 const canvas = document.getElementById("map");
@@ -31,6 +38,7 @@ let names = { items: {}, creatures: {} };   // names.json
 let view = { x: 0, y: 0, scale: 1 };   // the pixel of the picture at the centre of the window, and window pixels per pixel of it
 let glide = null;                  // the view being moved to: { from, to, since }
 const pins = [];                   // { x, y (pixels of the picture), layer, id, key ("layer:id"), map, u, v, count }
+                                   // the key is made once: the search asks for it of every pin
 const nodes = new Map();           // node id -> the API's Node
 const details = new Map();         // "creature:1674" -> the API's Creature, once asked for
 const layers = { mining: true, herbalism: true, creature: true };
@@ -145,9 +153,50 @@ function drawTiles(zoom) {
   return whole;
 }
 
-// Asked of every pin at every frame and every move of the mouse: its key is made once, not here.
 function shown(pin) {
   return layers[pin.layer] && (!matches || matches.has(pin.key));
+}
+
+// What is drawn is not every place. Far out, the places of one kind that fall in one small square are drawn as one
+// mark, at their middle, a little larger the more they are: a frame then costs what the window can hold, not what the
+// records hold, and a view of the whole world can be read. The squares are the picture's, not the window's, so a
+// mark stays where it is while the map is moved; they halve every two steps of zoom, and each step's marks are kept
+// until the places or the search change. At the closest steps every place is its own pin.
+// A mark is a pin itself, or { x, y, layer, n, pins } for several.
+const marks = new Map();           // step of zoom -> the marks of that step
+
+function marked() {
+  const step = Math.round(Math.log2(view.scale) * 2), scale = 2 ** (step / 2);
+  let list = marks.get(step);
+  if (list) return list;
+  if (marks.size > 5) marks.clear();
+  if (scale >= DEEPEST / 1.5) {
+    list = matches ? pins.filter((pin) => matches.has(pin.key)) : pins.slice();
+  } else {
+    const size = CELL / scale, squares = new Map();
+    for (const pin of pins) {
+      if (matches && !matches.has(pin.key)) continue;
+      const key = (Math.floor(pin.y / size) * 4194304 + Math.floor(pin.x / size)) * 4 + ORDER[pin.layer];
+      const held = squares.get(key);
+      if (!held) squares.set(key, pin);
+      else if (held.n) { held.pins.push(pin); held.n++; held.x += pin.x; held.y += pin.y; }
+      else squares.set(key, { x: held.x + pin.x, y: held.y + pin.y, layer: pin.layer, n: 2, pins: [held, pin] });
+    }
+    list = [...squares.values()];
+    for (const mark of list) {
+      if (mark.n) { mark.x /= mark.n; mark.y /= mark.n; }
+    }
+  }
+  list.sort((a, b) => ORDER[a.layer] - ORDER[b.layer]);
+  marks.set(step, list);
+  return list;
+}
+
+// The places or the search changed: the marks are made again, the counts told again.
+function changed() {
+  marks.clear();
+  count();
+  schedule();
 }
 
 function screen(pin) {
@@ -189,23 +238,53 @@ function draw() {
     drawTiles(coarse + 1);
     ctx.globalAlpha = 1;
   }
-  const radius = Math.max(3.5, Math.min(7, 4.5 + Math.log2(view.scale) * 1.2));
-  for (const pin of pins) {
-    if (!shown(pin)) continue;
-    const [sx, sy] = screen(pin);
-    if (sx < -10 || sy < -10 || sx > w + 10 || sy > h + 10) continue;
-    outline(pin.layer, sx, sy, pin === chosen ? radius + 3 : radius);
-    ctx.lineJoin = "round";
-    ctx.lineWidth = pin === chosen ? 6 : 4;
-    ctx.strokeStyle = "rgba(20,14,8,.85)";
-    ctx.stroke();                                   // the dark rim, widest, mostly hidden by the next
-    ctx.lineWidth = pin === chosen ? 3.5 : 2;
-    ctx.strokeStyle = "#fff";
-    ctx.stroke();
-    ctx.fillStyle = COLOURS[pin.layer];
-    ctx.fill();
+  const radius = Math.round(2 * Math.max(3.5, Math.min(7, 4.5 + Math.log2(view.scale) * 1.2))) / 2;
+  const dx = w / 2 - view.x * view.scale, dy = h / 2 - view.y * view.scale;
+  for (const mark of marked()) {
+    if (!layers[mark.layer] || mark === chosen) continue;
+    const aside = mark.n ? ASIDE[mark.layer] : NOT_ASIDE;
+    const sx = mark.x * view.scale + dx + aside[0], sy = mark.y * view.scale + dy + aside[1];
+    if (sx < -14 || sy < -14 || sx > w + 14 || sy > h + 14) continue;
+    stamp(mark.layer, sx, sy, mark.n ? 2.5 + Math.round(Math.min(2, Math.log2(mark.n) / 3)) / 2 : radius);
   }
+  // The pin whose detail is open, over the others and larger, also where a mark stands for it and its neighbours.
+  if (chosen && shown(chosen)) paint(ctx, chosen.layer, ...screen(chosen), radius + 3, true);
   float();
+}
+
+// A pin's picture is drawn once per kind and size and stamped from then on: drawing its outline anew for every pin
+// of every frame took three times as long.
+const stamps = new Map();
+
+function stamp(layer, x, y, r) {
+  const ratio = window.devicePixelRatio || 1, key = `${layer}/${r}/${ratio}`;
+  let image = stamps.get(key);
+  if (!image) {
+    const half = Math.ceil(r * 1.35 + 4);
+    image = document.createElement("canvas");
+    image.width = image.height = Math.ceil(2 * half * ratio);
+    const c = image.getContext("2d");
+    c.scale(image.width / (2 * half), image.width / (2 * half));
+    paint(c, layer, half, half, r, false);
+    stamps.set(key, image);
+    image.half = half;
+  }
+  // On a whole pixel of the screen: between two it would be blurred.
+  ctx.drawImage(image, Math.round((x - image.half) * ratio) / ratio, Math.round((y - image.half) * ratio) / ratio,
+    2 * image.half, 2 * image.half);
+}
+
+function paint(c, layer, x, y, r, strong) {
+  outline(c, layer, x, y, r);
+  c.lineJoin = "round";
+  c.lineWidth = strong ? 6 : 4;
+  c.strokeStyle = "rgba(20,14,8,.85)";
+  c.stroke();                                       // the dark rim, widest, mostly hidden by the next
+  c.lineWidth = strong ? 3.5 : 2;
+  c.strokeStyle = "#fff";
+  c.stroke();
+  c.fillStyle = COLOURS[layer];
+  c.fill();
 }
 
 // Keeps the detail card beside the pin it is about, as the map moves: to its right, or to its left where the right
@@ -232,19 +311,19 @@ function float() {
 
 // The outline of a pin about a point: a diamond for a vein, a disc for a herb, a triangle for a monster, of about
 // the same area.
-function outline(layer, x, y, r) {
-  ctx.beginPath();
+function outline(c, layer, x, y, r) {
+  c.beginPath();
   if (layer === "mining") {
     const d = r * 1.25;
-    ctx.moveTo(x, y - d); ctx.lineTo(x + d, y); ctx.lineTo(x, y + d); ctx.lineTo(x - d, y);
+    c.moveTo(x, y - d); c.lineTo(x + d, y); c.lineTo(x, y + d); c.lineTo(x - d, y);
   } else if (layer === "creature") {
     const d = r * 1.35;
-    ctx.moveTo(x, y - d); ctx.lineTo(x + d * 0.92, y + d * 0.62); ctx.lineTo(x - d * 0.92, y + d * 0.62);
+    c.moveTo(x, y - d); c.lineTo(x + d * 0.92, y + d * 0.62); c.lineTo(x - d * 0.92, y + d * 0.62);
   } else {
-    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    c.arc(x, y, r, 0, 2 * Math.PI);
     return;
   }
-  ctx.closePath();
+  c.closePath();
 }
 
 function schedule() {
@@ -341,13 +420,15 @@ function at(event) {
   return [event.clientX - box.left, event.clientY - box.top];
 }
 
+// The mark nearest a point of the window, within reach: a pin, or the mark of several.
 function nearest(px, py, reach) {
   let best = null, least = reach * reach;
-  for (const pin of pins) {
-    if (!shown(pin)) continue;
-    const [sx, sy] = screen(pin);
-    const d = (sx - px) ** 2 + (sy - py) ** 2;
-    if (d <= least) { least = d; best = pin; }
+  const dx = canvas.clientWidth / 2 - view.x * view.scale, dy = canvas.clientHeight / 2 - view.y * view.scale;
+  for (const mark of marked()) {
+    if (!layers[mark.layer]) continue;
+    const aside = mark.n ? ASIDE[mark.layer] : NOT_ASIDE;
+    const d = (mark.x * view.scale + dx + aside[0] - px) ** 2 + (mark.y * view.scale + dy + aside[1] - py) ** 2;
+    if (d <= least) { least = d; best = mark; }
   }
   return best;
 }
@@ -358,7 +439,8 @@ function hover(event) {
   const here = zoneAt(view.x + (px - canvas.clientWidth / 2) / view.scale, view.y + (py - canvas.clientHeight / 2) / view.scale);
   const pin = nearest(px, py, 9);
   canvas.style.cursor = pin ? "pointer" : "";
-  $("where").textContent = pin ? label(pin) + " · " + place(pin.map, pin.u, pin.v)
+  $("where").textContent = pin && pin.n ? `${pin.n} ${MANY[pin.layer]} : cliquer pour approcher`
+    : pin ? label(pin) + " · " + place(pin.map, pin.u, pin.v)
     : here ? place(here.id, here.u, here.v) : "Azeroth";
 }
 
@@ -485,7 +567,10 @@ async function open(pin) {
 function pick(event) {
   const [px, py] = at(event);
   const pin = nearest(px, py, 10);
-  if (pin) open(pin); else closeDetail();
+  // A mark of several is approached, until its places come apart: at the closest every place is its own pin.
+  if (pin && pin.n) zoomAt(2, px, py);
+  else if (pin) open(pin);
+  else closeDetail();
 }
 
 function closeDetail() {
@@ -523,7 +608,7 @@ let searching = 0;
 $("search").addEventListener("input", async (event) => {
   const wanted = event.target.value.trim().toLowerCase();
   const mine = ++searching;
-  if (!wanted) { matches = sought = null; count(); schedule(); return; }
+  if (!wanted) { matches = sought = null; changed(); return; }
   const ids = Object.entries(names.items).filter(([, [name]]) => name.toLowerCase().includes(wanted)).map(([id]) => Number(id));
   sought = { wanted, items: new Set(ids) };
   const found = new Set();
@@ -531,8 +616,7 @@ $("search").addEventListener("input", async (event) => {
     if (fits(pin)) found.add(pin.layer + ":" + pin.id);
   }
   matches = found;
-  count();
-  schedule();
+  changed();
   // The monsters that dropped one of the items: one question per item, for the few items a search of three letters
   // or more names among those ever recorded.
   if (wanted.length < 3) return;
@@ -542,8 +626,7 @@ $("search").addEventListener("input", async (event) => {
       for (const creature of await all(`/creatures?item=${id}`)) found.add("creature:" + creature.id);
     } catch (error) { /* the search then shows what it already found */ }
     if (mine !== searching) return;
-    count();
-    schedule();
+    changed();
   }
 });
 
@@ -587,37 +670,30 @@ async function all(path) {
   return rows;
 }
 
-function pin(layer, id, row, count) {
-  const point = toWorld(row.map, row.x, row.y);
-  if (!point) return;
-  const made = { ...point, layer, id, key: layer + ":" + id, map: row.map, u: row.x, v: row.y, count };
+function pin(layer, id, map, u, v, count) {
+  const point = toWorld(map, u, v);
+  const made = { ...point, layer, id, key: layer + ":" + id, map, u, v, count };
   pins.push(made);
-  // A search typed while the places were still coming in also takes those that come after it.
+  // A search typed while the places were still coming in also takes them.
   if (matches && sought && fits(made)) matches.add(made.key);
 }
 
-// Returns how many places lie on maps the page does not show, and how many maps could not be loaded: one map the
-// API refuses leaves the others on the page.
+// Every place comes in one answer of the API, written short: per map and kind, three numbers a place (see /places
+// in the API's own description). Returns how many places lie on maps the page does not show.
 async function load() {
-  let elsewhere = 0, missed = 0;
-  for (const node of await all("/nodes")) nodes.set(node.id, node);
-  for (const map of await all("/maps")) {
-    if (!world.zones[map.id]) { elsewhere += map.node_place_count + map.creature_place_count; continue; }
-    let veins, beasts;
-    try {
-      [veins, beasts] = await Promise.all([
-        map.node_place_count ? all(`/maps/${map.id}/node-places`) : [],
-        map.creature_place_count ? all(`/maps/${map.id}/creature-places`) : []]);
-    } catch (error) {
-      missed++;
-      continue;
+  const [kinds, places] = await Promise.all([all("/nodes"), get("/places")]);
+  for (const node of kinds) nodes.set(node.id, node);
+  let elsewhere = 0;
+  for (const map of places.maps) {
+    for (const [layer, held] of [["mining", map.mining], ["herbalism", map.herbalism], ["creature", map.creatures]]) {
+      for (const [id, flat] of Object.entries(held)) {
+        if (!world.zones[map.id]) { elsewhere += flat.length / 3; continue; }
+        for (let i = 0; i < flat.length; i += 3) pin(layer, Number(id), map.id, flat[i] / 1000, flat[i + 1] / 1000, flat[i + 2]);
+      }
     }
-    for (const row of veins) pin(row.kind, row.node, row, row.gathers);
-    for (const row of beasts) pin("creature", row.creature, row, row.corpses);
-    count();
-    schedule();
   }
-  return { elsewhere, missed };
+  changed();
+  return elsewhere;
 }
 
 // --- where the page was left: in the address, so that a link shows the same thing ------------------------------
@@ -665,9 +741,8 @@ async function start() {
   if (!recalled()) view = clamp({ x: world.size[0] / 2, y: world.size[1] / 2, scale: 0 });
   resize();
   try {
-    const { elsewhere, missed } = await load();
-    $("status").textContent = `${pins.length} endroits relevés` + (elsewhere ? `, ${elsewhere} hors de ces cartes` : "")
-      + (missed ? ` ; ${missed} cartes n'ont pas pu être chargées` : "") + ".";
+    const elsewhere = await load();
+    $("status").textContent = `${pins.length} endroits relevés` + (elsewhere ? `, ${elsewhere} hors de ces cartes` : "") + ".";
   } catch (error) {
     $("status").textContent = "Les relevés n'ont pas pu être chargés : la carte est vide pour l'instant.";
   }

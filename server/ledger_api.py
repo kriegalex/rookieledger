@@ -13,8 +13,8 @@ other program. It only reads: the database is opened read-only and no request ch
   GET /v1/nodes/{id}/places        where that kind was gathered
   GET /v1/maps[/{id}]              the maps that have places
   GET /v1/maps/{id}/node-places    every gathering place of one map
-  GET /v1/maps/{id}/creature-places  every place of one map where a monster was looted: with the line above, what
-                                   a map page loads
+  GET /v1/maps/{id}/creature-places  every place of one map where a monster was looted
+  GET /v1/places                   every place of every map in one compact document: what a map page loads
   GET /v1/recipes[/{id}]           per recipe: the skill at which its colour turns, skill points per craft
   GET /v1/disenchants              per quality, class and item level: what disenchanting gave
   GET /healthz                     200 while the process answers
@@ -47,6 +47,7 @@ MAX_LIMIT = 1000
 MAX_CACHED = 512        # answers kept ready per state of the database
 MAX_CACHED_BYTES = 32 * 2**20   # and their size, plain and gzipped: one query spelt many ways (limit=1000,
                                 # limit=01000, %31000...) is many answers, each a page as large as a page can be
+PLACES_WARN = 5 * 2**20         # gzipped size of /places past which the log says a map page should load less at once
 AUTH_MODES = ("none", "key")
 COLOURS = ("orange", "yellow", "green", "grey")
 KINDS = {1: "mining", 2: "herbalism"}
@@ -97,6 +98,9 @@ class View:
 
     def __init__(self, records, updated_at=None):
         self.record_count, self.updated_at, self.cache, self.cached_bytes = len(records), updated_at, {}, 0
+        # The one large answer, /places, is kept apart from the others and made by one request at a time: the cache
+        # is emptied whenever it is full, and every map page asks for this.
+        self.kept, self.making = None, threading.Lock()
         self.items, self.maps = {}, {}
         self._creatures(records)
         self._nodes(records)
@@ -271,7 +275,7 @@ def root(view, q, prefix):
                        "maps": len(view.maps), "recipes": len(view.recipes),
                        "disenchants": len(view.disenchants)},
             "links": {name: f"{prefix}/{name}" for name in
-                      ("creatures", "items", "nodes", "maps", "recipes", "disenchants", "openapi.json")}}
+                      ("creatures", "items", "nodes", "maps", "places", "recipes", "disenchants", "openapi.json")}}
 
 
 def creatures(view, q):
@@ -304,6 +308,20 @@ def creature_places(view, q, creature=None, map_id=None):
     rows = view.creature_places if map_id is None else view.creature_places_by_map.get(map_id, [])
     rows = [row for row in rows if creature in (None, row["creature"])]
     return _page(rows, lambda row: row["at"], q)
+
+
+def places(view, q):
+    """Every place of every map, as few bytes as JSON allows: a map page asks for all of them at once, and one
+    object per place would be several times the size and a request per thousand."""
+    maps = {}
+    blank = lambda: {"mining": {}, "herbalism": {}, "creatures": {}}
+    for row in view.node_places:
+        map_id, node, x, y = row["at"]
+        maps.setdefault(map_id, blank())[row["kind"]].setdefault(str(node), []).extend((x, y, row["gathers"]))
+    for row in view.creature_places:
+        map_id, creature, x, y = row["at"]
+        maps.setdefault(map_id, blank())["creatures"].setdefault(str(creature), []).extend((x, y, row["corpses"]))
+    return {"maps": [{"id": map_id, **maps[map_id]} for map_id in sorted(maps)]}
 
 
 def recipes(view, q):
@@ -345,6 +363,7 @@ ROUTES = [
     ("/maps/{map}/creature-places", ("creature",) + PAGING,
      lambda v, q, map: creature_places(v, q, map_id=_one(v.maps, map, "map")["id"]), ["CreaturePlace"],
      "Every place of one map where a monster was looted"),
+    ("/places", (), places, "Places", "Every place of every map, in one compact document: what a map page loads"),
     ("/recipes", ("profession",) + PAGING, recipes, ["Recipe"], "Recipes, with the skill at which their colour turns"),
     ("/recipes/{recipe}", (), lambda v, q, recipe: _one(v.recipes, recipe, "recipe"), "Recipe", "One recipe"),
     ("/disenchants", ("quality", "item_class", "item_level") + PAGING, disenchants, ["Disenchant"],
@@ -400,6 +419,10 @@ _QUEST = {"quest": {**_INT, "description": "the quest most records name for it"}
 _WHERE = {"map": {**_INT, "description": "the game's id of the map"},
           "x": {"type": "number", "minimum": 0, "maximum": 1, "description": "from the left edge of the map"},
           "y": {"type": "number", "minimum": 0, "maximum": 1, "description": "from the top edge of the map"}}
+_FLAT = lambda id_of, count: {
+    "type": "object", "additionalProperties": {"type": "array", "items": _COUNT},
+    "description": f"per {id_of} (the game's id, as the key): its places on this map, three numbers each, one place "
+                   f"after the other: x and y in thousandths of the map from its left and top edges, then {count}"}
 _REF = lambda name: {"$ref": "#/components/schemas/" + name}
 _NULLABLE = lambda schema: {"oneOf": [schema, {"type": "null"}]}
 _DISENCHANT = {"quality": {"type": "string", "enum": list(QUALITIES.values())},
@@ -433,6 +456,11 @@ SCHEMAS = {
                  "nodes": {"type": "array", "items": _INT}, "node_place_count": _COUNT, "gathers": _COUNT,
                  "creatures": {"type": "array", "items": _INT}, "creature_place_count": _COUNT,
                  "corpses": {**_COUNT, "description": "corpses looted on this map whose place is known"}}),
+    "Places": _obj({"maps": {"type": "array", "items": _obj({
+        "id": {**_INT, "description": "the game's id of the map"},
+        "mining": _FLAT("kind of vein", "the gathers there"), "herbalism": _FLAT("kind of herb", "the gathers there"),
+        "creatures": _FLAT("kind of monster", "the corpses looted there")})}},
+        "The places of NodePlace and CreaturePlace, all of them, written short"),
     "Recipe": _obj({
         "id": {**_INT, "description": "the game's id of the recipe's spell"},
         "profession": _NULLABLE({**_INT, "description": "the game's id of the profession; null when only crafts are known"}),
@@ -628,8 +656,11 @@ class Handler(BaseHTTPRequestHandler):
             view = self.server.store.current()
             key = (url.path, url.query)
             # Read once: another request's thread may empty the cache between two looks at it.
-            entry = view.cache.get(key)
-            if entry is None:
+            whole = key == (prefix + "/places", "")
+            entry = view.kept if whole else view.cache.get(key)
+            if entry is None and whole:
+                entry = self.keep_places(view, prefix, auth)
+            elif entry is None:
                 document = answer(view, url.path[len(prefix):], url.query, prefix, auth)
                 raw = json.dumps(document, separators=(",", ":")).encode()
                 packed = gzip.compress(raw, 6, mtime=0)
@@ -651,6 +682,22 @@ class Handler(BaseHTTPRequestHandler):
         if re.search(r"\bgzip\b(?!\s*;\s*q=0(\.0*)?\s*(,|$))", self.headers.get("Accept-Encoding", "")):
             return self.send(200, packed, headers=headers + (("Content-Encoding", "gzip"),))
         self.send(200, raw, headers=headers)
+
+    def keep_places(self, view, prefix, auth):
+        """Makes /places once per state of the database, and tells the log how large it has become: that size, as
+        the records grow, is what says when a map page should stop loading every place at once."""
+        with view.making:
+            if view.kept is None:
+                started = time.monotonic()
+                raw = json.dumps(answer(view, "/places", "", prefix, auth), separators=(",", ":")).encode()
+                packed = gzip.compress(raw, 6, mtime=0)
+                view.kept = (raw, packed, 'W/"%s"' % hashlib.sha256(raw).hexdigest()[:20])
+                sys.stderr.write("%s places document: %d places, %d bytes, %d gzipped, made in %.2f s%s\n" % (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), len(view.node_places) + len(view.creature_places),
+                    len(raw), len(packed), time.monotonic() - started,
+                    " (over %d MiB gzipped: time to load less at once)" % (PLACES_WARN // 2**20)
+                    if len(packed) > PLACES_WARN else ""))
+            return view.kept
 
     do_HEAD = do_GET
 

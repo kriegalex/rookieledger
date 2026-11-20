@@ -203,7 +203,8 @@ curl http://localhost:8788/v1/openapi.json                             # the con
 | `/v1/creatures`, `/v1/creatures/{id}`, `/v1/creatures/{id}/places` | per kind of monster: corpses, coin, what they held, quest items, and where it was looted |
 | `/v1/items`, `/v1/items/{id}` | per item: the monsters, veins, herbs and disenchants that gave it |
 | `/v1/nodes`, `/v1/nodes/{id}`, `/v1/nodes/{id}/places` | per kind of vein or herb: what it gave, and where it was gathered |
-| `/v1/maps`, `/v1/maps/{id}`, `/v1/maps/{id}/node-places`, `/v1/maps/{id}/creature-places` | everything placed on one map: what a map page loads |
+| `/v1/maps`, `/v1/maps/{id}`, `/v1/maps/{id}/node-places`, `/v1/maps/{id}/creature-places` | everything placed on one map |
+| `/v1/places` | every place of every map in one compact document: what a map page loads |
 | `/v1/recipes`, `/v1/recipes/{id}` | the skill at which a recipe's colour turns, and skill points per craft |
 | `/v1/disenchants` | what disenchanting gave, per quality, class and item level |
 
@@ -236,8 +237,9 @@ document stay open. The service limits no one's rate itself; do that in the reve
 
 `site/` is a static page that shows the read API's places on the game's own maps, as one picture of the world
 that can be zoomed and moved, from both continents down to a zone: veins, herbs and monsters as points, with what
-each gave when one is clicked. It reads
-the API from the visitor's browser; the address is the `API` constant at the top of `site/app.js`.
+each gave when one is clicked. Far out, the places of one kind that lie close together are drawn as one mark; a
+click on it comes closer, until they are apart. It reads the API from the visitor's browser, every place in one
+request (`/v1/places`); the address is the `API` constant at the top of `site/app.js`.
 
 The pictures and the names are not in the repository: they are Blizzard's, and are made from a game install.
 

@@ -126,6 +126,15 @@ class Totals(unittest.TestCase):
         self.assertEqual(len(self.get("/nodes/1731/places")["data"]), 2)
         self.assertEqual(self.get("/maps/1429/node-places", "kind=herbalism")["data"], [])
 
+    def test_every_place_is_in_the_one_document(self):
+        self.assertEqual(self.get("/places"), {"maps": [
+            {"id": 1429, "mining": {"1731": [412, 655, 5, 500, 10, 1]}, "herbalism": {}, "creatures": {"1674": [410, 650, 7]}},
+            {"id": 1437, "mining": {}, "herbalism": {"1617": [203, 303, 1]}, "creatures": {"1674": [5, 1000, 1]}}]})
+        # It says what the pages say, place for place.
+        told = sum(len(flat) // 3 for m in self.get("/places")["maps"] for kind in ("mining", "herbalism", "creatures")
+                   for flat in m[kind].values())
+        self.assertEqual(told, len(self.view.node_places) + len(self.view.creature_places))
+
     def test_monsters_are_placed_where_they_were_looted(self):
         self.assertEqual(self.get("/creatures/1674/places")["data"], [
             {"creature": 1674, "map": 1429, "x": 0.41, "y": 0.65, "corpses": 7},
@@ -335,6 +344,17 @@ class Http(Service):
                 self.assertEqual(view.cached_bytes, kept)
                 self.assertLessEqual(kept, budget)
             self.assertLess(len(view.cache), 5)
+
+    def test_the_places_are_made_once_and_outlive_the_cache(self):
+        self.upload()
+        with mock.patch.object(ledger_api.sys, "stderr", io.StringIO()) as log:
+            status, headers, body = self.call("/v1/places", headers={"Accept-Encoding": "gzip"})
+            self.assertEqual((status, headers["Content-Encoding"]), (200, "gzip"))
+            self.assertEqual(json.loads(gzip.decompress(body))["maps"][0]["id"], 1429)
+            self.server.store.view.cache.clear()   # as a full cache is
+            self.assertEqual(self.call("/v1/places", headers={"If-None-Match": headers["ETag"]})[0], 304)
+        self.assertEqual(log.getvalue().count("places document: 5 places"), 1)
+        self.assertEqual(self.call("/v1/places?limit=5")[0], 400)
 
     def test_the_document_is_served_and_asks_for_no_key(self):
         spec = json.loads(self.call("/v1/openapi.json")[2])
