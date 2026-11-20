@@ -1,11 +1,13 @@
-# RookieLedger v0.6.2
+# RookieLedger v0.7.0
 
+- The Windows sync app has a window and an icon in the notification area. The window says whether the site
+  answers, when your data was last synced and whether the addon's data was found. Closing it leaves the app running
+  behind its icon: a click on the icon shows the window again, a right-click offers to show or hide it, or to quit.
+  It opens when you start the app yourself, not when your session does.
+- To show whether the site answers, the Windows app asks it every 10 minutes, without your token, when nothing
+  else was sent in that time.
 - Crafts made in a queue are counted right. The game gives a craft's skill point after the next craft has started,
-  so the first craft of a queue was counted without its point and the last one's went to the craft before it.
-- The package holds the addon alone: v0.6.1 also carried the files of the map page. Its four libraries are taken at
-  fixed versions.
-- The map, https://rookieledger.21crypto.ch/, loads every place in one request. Far out, the places of one kind
-  that lie close together are drawn as one mark; a click on it comes closer, until they are apart.
-- For who runs a site: the read API has `/v1/places`, every place of every map in one document, and the upload
-  service refuses a saved file of more than 250,000 values, six times what a year of one account's play holds.
-- Nothing else changes in what is recorded or sent.
+  so the first craft of a queue was counted without its point and the last one's went to the craft before it. This
+  was in the v0.6.2 beta; the addon is otherwise unchanged.
+- The map, https://rookieledger.21crypto.ch/, has a page on privacy: what is recorded, sent and kept.
+- Until version 1.0, RookieLedger is a beta: things can still change between versions.
