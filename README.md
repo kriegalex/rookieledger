@@ -11,6 +11,10 @@ on a [map](https://rookieledger.21crypto.ch/):
 - what each kind of monster really drops, and how much coin;
 - how often a monster really gives the item a quest asks for.
 
+RookieLedger is in beta until version 1.0: it records and uploads reliably, but what it records, the map and the
+way files are published can still change from one version to the next. Every version below 1.0 is a beta, whatever
+a download page shows as its release type.
+
 ## What is recorded
 
 Only numbers the game client shows you:
