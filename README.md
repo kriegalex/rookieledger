@@ -329,7 +329,8 @@ checked against the heading of its version, `# RookieLedger v0.2.1`.
 The Windows app can also be packaged for the Microsoft Store: `companion/store/` holds the package manifest, its
 logos and `package.ps1`, which makes an `.msix` from a built `RookieLedgerSync.exe`. The release workflow keeps that
 file with its run, as the artifact `store-package`, to be uploaded to Partner Center by hand; it is not signed, since
-the Store signs what it publishes. The Store takes no version that starts with 0, so `v0.7.0` is `1.7.0.0` there.
+the Store signs what it publishes. The Store takes no version that starts with 0: while the project is at 0.x, its
+version there is `1.0.N.0`, where N goes up by one with each release.
 Run from its package, the app leaves installing, starting with the session and updating to Windows: it copies
 itself nowhere and writes no Run key.
 
