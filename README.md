@@ -94,9 +94,11 @@ that file and uploads it.
 
 1. Download `RookieLedgerSync.exe` (Windows) or `rookieledger-sync-linux-amd64` (Linux) from the
    [latest release](../../releases/latest).
-2. Windows: double-click it. It has no window: it copies itself to `%LocalAppData%\RookieLedgerSync`, sets that copy
-   to start with your session and runs in the background, so the downloaded file can be deleted. To update, download
-   the new version and double-click it.
+2. Windows: double-click it. It copies itself to `%LocalAppData%\RookieLedgerSync`, sets that copy to start with
+   your session and opens a small window, so the downloaded file can be deleted. The window says whether the site
+   answers, when your data was last synced and whether the addon's data was found. Closing it leaves the app
+   running behind its icon in the notification area: a click on the icon shows the window again, a right-click
+   offers to show or hide it, or to quit. To update, download the new version and double-click it.
    Linux: `chmod +x rookieledger-sync-linux-amd64 && ./rookieledger-sync-linux-amd64 --install` (a systemd user unit).
 3. Play. On a site open to all, such as the one this addon was written for, uploads start by themselves after your
    next game session. On a site that registers tokens by hand, type `/ledger token` in game and give the token to
@@ -114,6 +116,7 @@ block unsigned programs with no bypass.
 | `--install` / `--uninstall` | Adds or removes the start with your session (Windows: `--uninstall` also stops and removes the installed copy) |
 | `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself (remembered) |
 | `--url URL` | Another site's upload address (remembered; `--url default` goes back) |
+| `--background` | Windows: starts without opening the window, as the start with your session does |
 
 ### What the app sends, and where
 
@@ -123,6 +126,8 @@ block unsigned programs with no bypass.
   (`WTF/Account/<account>/SavedVariables/RookieLedger.lua`) when its content has changed, with the token. That file
   holds the record described above, gathering places included. The per-character file of the same name, one folder
   deeper, is not read.
+- On Windows it also asks the site every 10 minutes whether it is up, without the token, when nothing else was
+  sent in that time: the window shows the answer.
 - It reads no other file, sends no telemetry and does not update itself.
 
 The token is the only credential: it is what ties your record to you. Give it to nobody, except to the ledger
@@ -252,7 +257,7 @@ The pictures and the names are not in the repository: they are Blizzard's, and a
 ```sh
 python3 tools/maps/build_world.py cache build/site --install "<World of Warcraft folder>"   # tiles/ and world.json
 python3 tools/maps/build_names.py cache build/site --install "<World of Warcraft folder>"   # names.json
-cp site/* build/site/                                                                       # the page itself
+cp site/* build/site/                                                                       # the page and its privacy notice
 python3 -m http.server 8080 --directory build/site                                          # to look at it
 ```
 

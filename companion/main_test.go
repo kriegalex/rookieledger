@@ -282,3 +282,78 @@ func TestWowFoldersAreNotSearchedOnEveryPass(t *testing.T) {
 		t.Fatalf("after the wait: %d searches", searches-3)
 	}
 }
+
+// door counts what reaches it and answers every request with one status code.
+type door struct {
+	code, hits, withToken int
+}
+
+func (d *door) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	d.hits++
+	if r.Header.Get("Authorization") != "" {
+		d.withToken++
+	}
+	w.WriteHeader(d.code)
+}
+
+func TestWindowAsksWhetherTheSiteIsUpWithoutAToken(t *testing.T) {
+	web := &door{code: http.StatusUnauthorized}
+	server := httptest.NewServer(web)
+	defer server.Close()
+	clock := time.Now()
+	s := newSyncer(server.URL, &clock)
+	changes := 0
+	s.probeEvery, s.changed = probeEvery, func() { changes++ }
+	for i := 0; i < 10; i++ { // ten minutes of polling, with no game installed
+		s.pass(nil)
+		clock = clock.Add(time.Minute)
+	}
+	if v := s.view(); web.hits != 1 || web.withToken != 0 || !v.Up || v.Files != 0 {
+		t.Fatalf("%d requests, %d with a token, view %+v", web.hits, web.withToken, v)
+	}
+	if changes != 1 {
+		t.Fatalf("the window was told %d times of one change", changes)
+	}
+	web.code = http.StatusServiceUnavailable // the front door answers, the site behind it does not
+	s.pass(nil)
+	if v := s.view(); web.hits != 2 || v.Up || !v.Checked.Equal(clock) {
+		t.Fatalf("site down: %d requests, view %+v", web.hits, v)
+	}
+	server.Close()
+	clock = clock.Add(probeEvery)
+	s.pass(nil)
+	if v := s.view(); v.Up || !v.Checked.Equal(clock) {
+		t.Fatalf("site gone: view %+v", v)
+	}
+}
+
+func TestNoWindowNoQuestion(t *testing.T) {
+	web := &door{code: http.StatusUnauthorized}
+	server := httptest.NewServer(web)
+	defer server.Close()
+	clock := time.Now()
+	s := newSyncer(server.URL, &clock)
+	s.pass(nil)
+	if web.hits != 0 {
+		t.Fatalf("%d requests from a program with no window and no saved file", web.hits)
+	}
+}
+
+func TestLastSyncIsRemembered(t *testing.T) {
+	web := &site{registered: true}
+	server := httptest.NewServer(web)
+	defer server.Close()
+	root := t.TempDir()
+	writeSaved(t, root, "ONE", saved(""))
+	clock := time.Now()
+	s := newSyncer(server.URL, &clock)
+	s.pass([]string{root})
+	if v := s.view(); web.uploads != 1 || !v.LastSync.Equal(clock) || !s.st.LastSync.Equal(clock) || !v.Up || v.Files != 1 {
+		t.Fatalf("%d uploads, view %+v, state %v", web.uploads, v, s.st.LastSync)
+	}
+	path := filepath.Join(t.TempDir(), "state.json")
+	saveState(path, s.st)
+	if got := loadState(path).LastSync; !got.Equal(clock) {
+		t.Fatalf("read back %v, wrote %v", got, clock)
+	}
+}

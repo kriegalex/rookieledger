@@ -20,6 +20,9 @@ const installHandsOver = true
 
 const unitName = "rookieledger-sync.service"
 
+// serve runs the watching loop. There is no window here: the journal says what the program does.
+func serve(_ *syncer, _ bool, watch func()) { watch() }
+
 // platformRoots lists where a "World of Warcraft" folder usually is under Wine, Lutris, Bottles or a games disk.
 func platformRoots() []string {
 	home, _ := os.UserHomeDir()

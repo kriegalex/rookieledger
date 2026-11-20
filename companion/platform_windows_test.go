@@ -50,7 +50,7 @@ func TestAutostartEntry(t *testing.T) {
 	if err := registerRun(exe); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := regString(syscall.HKEY_CURRENT_USER, runKey, runValue); !ok || got != `"`+exe+`"` {
+	if got, ok := regString(syscall.HKEY_CURRENT_USER, runKey, runValue); !ok || got != `"`+exe+`" --background` {
 		t.Fatalf("Run key holds %q, %v", got, ok)
 	}
 	if err := removeAutostart(); err != nil {

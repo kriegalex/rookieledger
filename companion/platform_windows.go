@@ -34,6 +34,9 @@ const (
 var (
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	advapi32 = syscall.NewLazyDLL("advapi32.dll")
+	user32   = syscall.NewLazyDLL("user32.dll")
+	gdi32    = syscall.NewLazyDLL("gdi32.dll")
+	shell32  = syscall.NewLazyDLL("shell32.dll")
 )
 
 func hidden(name string, args ...string) *exec.Cmd {
@@ -148,6 +151,9 @@ func stopRunning(dir string) {
 	if err != nil || pid <= 0 || pid == os.Getpid() {
 		return
 	}
+	if askToQuit() {
+		time.Sleep(500 * time.Millisecond) // asked first, so that its tray icon goes with it
+	}
 	_ = hidden("taskkill", "/F", "/PID", strconv.Itoa(pid), "/FI", "IMAGENAME eq "+exeName).Run()
 	_ = os.Remove(pidFile(dir))
 }
@@ -192,7 +198,8 @@ func runKeyValue(f func(key syscall.Handle, name *uint16) uintptr) error {
 }
 
 func registerRun(exe string) error {
-	data, err := syscall.UTF16FromString(`"` + exe + `"`)
+	// --background: the session starts the program without opening its window.
+	data, err := syscall.UTF16FromString(`"` + exe + `" --background`)
 	if err != nil {
 		return err
 	}
@@ -258,13 +265,13 @@ func settle(dir string, st *state, save func()) (release func(), proceed bool) {
 	if selfErr == nil && targetErr == nil && !samePath(self, target) {
 		err := installCopy(dir, self, target)
 		if err == nil {
-			err = hidden(target, os.Args[1:]...).Start()
+			// Not hidden: a process started hidden has its first ShowWindow ignored, and its window is the point.
+			err = exec.Command(target, os.Args[1:]...).Start()
 		}
 		if err == nil {
+			// The installed copy opens its window, which says the rest.
 			if regErr := registerRun(target); regErr != nil {
 				notify(text("noautostart") + regErr.Error())
-			} else {
-				notify(text("installed") + "\n\n" + describe(st))
 			}
 			return nil, false
 		}
@@ -277,7 +284,9 @@ func settle(dir string, st *state, save func()) (release func(), proceed bool) {
 	}
 	release, running, err := lockInstance()
 	if running {
-		notify(text("running") + "\n\n" + describe(st))
+		if !showRunning() {
+			notify(text("running") + "\n\n" + describe(st))
+		}
 		return nil, false
 	}
 	if err != nil {
@@ -287,11 +296,11 @@ func settle(dir string, st *state, save func()) (release func(), proceed bool) {
 	return release, true
 }
 
-// notify shows a message box: the program is built without a console window.
+// notify shows a message box: the program is built without a console window, and --status has no window to use.
 func notify(message string) {
 	title, _ := syscall.UTF16PtrFromString("RookieLedger Sync")
 	body, _ := syscall.UTF16PtrFromString(message)
-	syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x40)
+	user32.NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x40)
 }
 
 func french() bool {

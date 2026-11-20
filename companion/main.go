@@ -10,6 +10,7 @@
 //	rookieledger-sync --once      one pass, then exit
 //	  --wow-dir DIR   the "World of Warcraft" folder, when it is not found by itself (remembered)
 //	  --url URL       the upload address (remembered; "default" goes back to the RookieLedger site)
+//	  --background    Windows: start without opening the window (how the session starts it)
 package main
 
 import (
@@ -28,6 +29,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,6 +40,7 @@ const (
 	pollEvery       = 60 * time.Second
 	recheckEvery    = 30 * time.Minute // how often an unregistered token asks again
 	rediscoverEvery = 30 * time.Minute // how often the disks are searched again for a WoW folder once one is known
+	probeEvery      = 10 * time.Minute // how often the window asks whether the site is up, when nothing else was sent
 	settleFor       = 5 * time.Second  // a file changed this recently may still be being written
 	maxFileBytes    = 8 << 20
 	maxLogBytes     = 1 << 20
@@ -58,6 +61,7 @@ type state struct {
 	URL       string               `json:"url,omitempty"` // the upload address when it is not the built-in one
 	Files     map[string]fileState `json:"files,omitempty"`
 	Installed bool                 `json:"installed,omitempty"`
+	LastSync  time.Time            `json:"last_sync,omitzero"` // when the site last accepted a file
 }
 
 // uploadURL is where this installation uploads: the address given once with --url, else the RookieLedger site.
@@ -82,6 +86,14 @@ type tokenStatus struct {
 	checked    time.Time
 }
 
+// view is what the Windows window shows. The watching loop writes it, the window reads a copy.
+type view struct {
+	LastSync time.Time // when the site last accepted a file
+	Checked  time.Time // when the site last answered, or failed to
+	Up       bool      // what that answer was
+	Files    int       // saved files found; -1 before the first look
+}
+
 type syncer struct {
 	url    string
 	client *http.Client
@@ -89,6 +101,28 @@ type syncer struct {
 	save   func()
 	tokens map[string]*tokenStatus
 	now    func() time.Time
+
+	probeEvery time.Duration // how often to ask whether the site is up when nothing else was sent; 0: never
+	changed    func()        // told when the view changes; may be nil
+	mu         sync.Mutex    // guards shown
+	shown      view
+}
+
+func (s *syncer) view() view {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.shown
+}
+
+func (s *syncer) show(change func(*view)) {
+	s.mu.Lock()
+	before := s.shown
+	change(&s.shown)
+	same := before == s.shown
+	s.mu.Unlock()
+	if !same && s.changed != nil {
+		s.changed()
+	}
 }
 
 func configDir() string {
@@ -182,12 +216,16 @@ func (s *syncer) request(method, path, token string, body []byte) (int, string, 
 	if err != nil {
 		return 0, "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("User-Agent", "RookieLedgerSync/"+version)
 	if body != nil {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 	resp, err := s.client.Do(req)
+	// A gateway's 502 or 503 is an answer, but not the site's: it is down behind its front door.
+	s.show(func(v *view) { v.Checked, v.Up = s.now(), err == nil && resp.StatusCode < 500 })
 	if err != nil {
 		return 0, "", err
 	}
@@ -256,7 +294,9 @@ func (s *syncer) syncFile(path string) {
 	case code == http.StatusOK:
 		log.Printf("uploaded %s: %s", filepath.Base(filepath.Dir(filepath.Dir(path))), text)
 		s.st.Files[path] = fileState{SHA: sha}
+		s.st.LastSync = s.now()
 		s.save()
+		s.show(func(v *view) { v.LastSync = s.st.LastSync })
 	case code == http.StatusUnauthorized:
 		s.tokens[token] = &tokenStatus{checked: s.now()}
 		log.Printf("token no longer accepted; asking again in %s", recheckEvery)
@@ -276,7 +316,21 @@ func (s *syncer) pass(roots []string) int {
 	for _, f := range files {
 		s.syncFile(f)
 	}
+	s.show(func(v *view) { v.Files = len(files) })
+	s.probe()
 	return len(files)
+}
+
+// probe asks the site whether it is up, for the window, when nothing was sent for probeEvery. It sends no token:
+// the site answers 401, which is answer enough.
+func (s *syncer) probe() {
+	if s.probeEvery == 0 {
+		return
+	}
+	if v := s.view(); !v.Checked.IsZero() && s.now().Sub(v.Checked) < s.probeEvery {
+		return
+	}
+	_, _, _ = s.request("GET", "status", "", nil)
 }
 
 func roots(st *state) []string {
@@ -330,6 +384,7 @@ func main() {
 	install := flag.Bool("install", false, "start with the session, then watch")
 	uninstall := flag.Bool("uninstall", false, "remove the autostart")
 	status := flag.Bool("status", false, "print the files found and their tokens")
+	background := flag.Bool("background", false, "Windows: start without opening the window")
 	flag.Parse()
 
 	dir := configDir()
@@ -382,19 +437,24 @@ func main() {
 	}
 
 	s := &syncer{url: st.uploadURL(), client: &http.Client{Timeout: 30 * time.Second}, st: st,
-		save: func() { saveState(statePath, st) }, tokens: map[string]*tokenStatus{}, now: time.Now}
+		save: func() { saveState(statePath, st) }, tokens: map[string]*tokenStatus{}, now: time.Now,
+		shown: view{LastSync: st.LastSync, Files: -1}}
 	log.Printf("rookieledger-sync %s, uploading to %s", version, s.url)
 	finder := &rootFinder{find: func() []string { return roots(st) }, now: time.Now}
-	found := -1
-	for {
-		n := s.pass(finder.roots())
-		if n != found {
-			log.Printf("%d saved file(s) found", n)
-			found = n
-		}
-		if *once {
-			return
-		}
-		time.Sleep(pollEvery)
+	if *once {
+		log.Printf("%d saved file(s) found", s.pass(finder.roots()))
+		return
 	}
+	// serve runs watch for as long as the program does; on Windows it also shows the tray icon and the window.
+	serve(s, !*background, func() {
+		found := -1
+		for {
+			n := s.pass(finder.roots())
+			if n != found {
+				log.Printf("%d saved file(s) found", n)
+				found = n
+			}
+			time.Sleep(pollEvery)
+		}
+	})
 }
