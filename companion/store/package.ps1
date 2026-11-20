@@ -42,7 +42,7 @@ try {
     $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
     $makeappx = Get-ChildItem (Join-Path $kits '*\x64\makeappx.exe') -ErrorAction SilentlyContinue |
         Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1
-    if (-not $makeappx) { throw "MakeAppx.exe not found under $kits: install the Windows SDK" }
+    if (-not $makeappx) { throw "MakeAppx.exe not found under ${kits}: install the Windows SDK" }
     # /l: the manifest names two languages and the package holds no resources per language.
     & $makeappx.FullName pack /o /l /d $stage /p $Out
     if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed with code $LASTEXITCODE" }
