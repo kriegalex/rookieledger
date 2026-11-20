@@ -4,3 +4,5 @@
 /addon/RookieLedger/Libs/
 __pycache__/
 *.pyc
+/.playwright-mcp/
+/build/

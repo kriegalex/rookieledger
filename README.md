@@ -231,6 +231,59 @@ One key per program, so that a program can be counted, limited or shut out alone
 be read by its visitors: it tells programs apart, it does not keep the data secret. `/healthz` and the OpenAPI
 document stay open. The service limits no one's rate itself; do that in the reverse proxy.
 
+### The map page
+
+`site/` is a static page that shows the read API's places on the game's own maps, as one picture of the world
+that can be zoomed and moved, from both continents down to a zone: veins, herbs and monsters as points, with what
+each gave when one is clicked. It reads
+the API from the visitor's browser; the address is the `API` constant at the top of `site/app.js`.
+
+The pictures and the names are not in the repository: they are Blizzard's, and are made from a game install.
+
+```sh
+python3 tools/maps/build_world.py cache build/site --install "<World of Warcraft folder>"   # tiles/ and world.json
+python3 tools/maps/build_names.py cache build/site --install "<World of Warcraft folder>"   # names.json
+cp site/* build/site/                                                                       # the page itself
+python3 -m http.server 8080 --directory build/site                                          # to look at it
+```
+
+- `build_world.py` needs Pillow and numpy. On one canvas, the world's, it lays each continent's map over the
+  world's map and every zone's map, fully explored, over that, where the game's tables say they are. Where zones
+  overlap, each counts for as much as the place is deep inside its own map. The tiles of the far zooms hold the
+  world's map, those of the close zooms the zones', and the page dissolves one into the other as it zooms. The
+  install gives the art in its own language; without `--install` the textures are downloaded, in English, from
+  wago.tools, which refuses more than a hundred or so in a row.
+- The tables (zones, their rectangles, item names) come from wago.tools for the client build named in
+  `tools/maps/gamedata.py`, and are kept in the cache folder.
+- At the closest zoom the ground itself shows over each zone's own land: the game's minimap, which the build takes
+  from the install square by square. Without `--install` there is no such zoom.
+- No name on the page comes from what members upload. Items are named from the game's tables. Those hold no
+  names of monsters, veins or herbs: the server tells them to the client as they are met. Monsters are named from
+  the install's own cache of what its player has met, so a monster only other members have met shows by its
+  number; a vein or a herb is named after what it gives.
+- Places on a map that is not a zone of the two continents (a city, a dungeon) are not shown.
+- The lettering of the maps is part of the pictures: where zones meet, a neighbour's name can show twice.
+
+Serve `build/site` as static files. The page asks the API from another name than its own, so a content security
+policy has to allow that name in `connect-src`.
+
+### Credits
+
+The map page stands on [OpenMap](https://github.com/openmap-world/openmap), the open-source seamless world map
+addon for WoW Forever by jigrobbulus and its contributors (MIT licence):
+
+- `tools/maps/casc.py`, which reads the game's install, is OpenMap's `tools/casc/casc.py`, unchanged; its licence
+  is `tools/maps/LICENSE-openmap`.
+- How the world is put together follows OpenMap's `ARCHITECTURE.md` and tools: one canvas on the world's map, the
+  zones placed from the game's `UiMapAssignment` table and drawn fully explored from their overlay pieces, each
+  zone given its own land, the layers coming in by zoom, the game's minimap for the closest view, and the
+  minimap's tiles read from each continent's WDT as OpenMap's `tools/map-data/minimap.py` does. The code here is
+  written for this page; the ideas are theirs.
+- The game's tables are read from [wago.tools](https://wago.tools), as OpenMap's tools read them.
+
+The maps, the minimap and the names of the game are Blizzard Entertainment's. Neither the MIT licence of this
+repository nor OpenMap's covers them: the repository holds none of them, and the page credits them.
+
 ## Development
 
 ```sh
