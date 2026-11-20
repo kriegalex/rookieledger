@@ -195,6 +195,8 @@ and so on to the fifth craft, whose point came after its `UNIT_SPELLCAST_SUCCEED
 - It is in before that next craft's `UNIT_SPELLCAST_SUCCEEDED`: 4 of 4.
 - So the skill read when a queued craft starts is the skill before the point of the craft before it. The addon
   reads it again once that point is in (`ResolveCraft` in `Scan.lua`).
+- Read that way, a queue of five such crafts was counted with one point each: 5 of 5, with v0.6.2-beta1. The same
+  queue under v0.6.1 was counted with no point, then one, one, one and two.
 
 ## Not verified
 
