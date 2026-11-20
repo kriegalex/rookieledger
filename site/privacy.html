@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RookieLedger: privacy</title>
+<meta name="description" content="What the RookieLedger addon, its sync app and this site record, send and keep.">
+<style>
+:root { --ink: #2b2118; --paper: #f1e3c0; --edge: #8a6d3b; --dim: #6b5a45; }
+body { font: 16px/1.5 Georgia, "Times New Roman", serif; color: var(--ink); background: #1d1812; margin: 0; padding: 24px 12px; }
+main { max-width: 720px; margin: 0 auto; padding: 20px 28px; background: var(--paper); border: 1px solid var(--edge); border-radius: 6px; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+h2 { font-size: 18px; margin: 24px 0 4px; }
+p, ul { margin: 0 0 10px; }
+a { color: inherit; }
+.dim { color: var(--dim); font-size: 14px; }
+hr { border: 0; border-top: 1px solid var(--edge); margin: 28px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>RookieLedger: privacy</h1>
+<p class="dim"><a href="./">Back to the map</a> · <a href="#fr">Version française plus bas</a></p>
+
+<h2>What the addon records</h2>
+<p>The addon records what you gather, loot, craft and disenchant in World of Warcraft: Forever, and where you
+gathered or looted it. It keeps this on your computer, in the game's own folder. It records no character name,
+account name, realm, guild, chat, gold total or inventory.</p>
+
+<h2>What the sync app sends</h2>
+<p>The sync app (RookieLedger Sync) uploads that record to this site after a game session, when it has changed. With
+it goes a random token the addon made, which tells the site that two uploads are the same record. The app reads no
+other file, sends no telemetry and contacts no other site. On Windows it also asks this site every 10 minutes
+whether it is up, without the token, to show it in its window.</p>
+
+<h2>What this site keeps</h2>
+<ul>
+<li>The records uploaded, each under a random 8-digit number, and the token that goes with it.</li>
+<li>Like any website, the servers see the IP address a request comes from. It is not kept with a record.</li>
+</ul>
+<p>The map and the public API show totals made from all records together: what a kind of monster, vein or herb
+gave, and where. This site uses no cookies, no advertising and no analytics, and shares nothing with anyone else.</p>
+
+<h2>Stopping, and removing your record</h2>
+<p>To stop uploading, quit the sync app or uninstall it. To have your record removed from the site, open an issue
+on <a href="https://github.com/kriegalex/rookieledger/issues">GitHub</a> with your record's number.</p>
+
+<h2>Contact</h2>
+<p><a href="https://github.com/kriegalex/rookieledger/issues">github.com/kriegalex/rookieledger/issues</a></p>
+
+<hr>
+
+<h1 id="fr" lang="fr">RookieLedger : confidentialité</h1>
+<div lang="fr">
+<h2>Ce que l'addon consigne</h2>
+<p>L'addon consigne ce que vous récoltez, fouillez, fabriquez et désenchantez dans World of Warcraft: Forever, et
+où vous l'avez récolté ou fouillé. Il le garde sur votre ordinateur, dans le dossier du jeu. Il ne consigne aucun
+nom de personnage, de compte, de royaume ou de guilde, ni discussion, ni total d'or, ni inventaire.</p>
+
+<h2>Ce que l'outil de synchronisation envoie</h2>
+<p>L'outil de synchronisation (RookieLedger Sync) envoie ces données à ce site après une session de jeu, quand
+elles ont changé. Il y joint un jeton aléatoire créé par l'addon, qui indique au site que deux envois viennent des
+mêmes données. L'outil ne lit aucun autre fichier, n'envoie aucune télémétrie et ne contacte aucun autre site. Sous
+Windows, il demande aussi à ce site toutes les 10 minutes s'il répond, sans le jeton, pour l'afficher dans sa
+fenêtre.</p>
+
+<h2>Ce que ce site conserve</h2>
+<ul>
+<li>Les données envoyées, sous un numéro aléatoire à 8 chiffres, et le jeton qui les accompagne.</li>
+<li>Comme tout site web, les serveurs voient l'adresse IP d'où vient une requête. Elle n'est pas conservée avec
+les données.</li>
+</ul>
+<p>La carte et l'API publique montrent des totaux faits de toutes les données réunies : ce qu'une sorte de monstre,
+de filon ou de plante a donné, et où. Ce site n'utilise ni cookies, ni publicité, ni mesure d'audience, et ne
+partage rien avec personne.</p>
+
+<h2>Arrêter, et faire retirer vos données</h2>
+<p>Pour arrêter l'envoi, quittez l'outil de synchronisation ou désinstallez-le. Pour faire retirer vos données du
+site, ouvrez un ticket sur <a href="https://github.com/kriegalex/rookieledger/issues">GitHub</a> avec le numéro de
+vos données.</p>
+
+<h2>Contact</h2>
+<p><a href="https://github.com/kriegalex/rookieledger/issues">github.com/kriegalex/rookieledger/issues</a></p>
+</div>
+</main>
+</body>
+</html>
