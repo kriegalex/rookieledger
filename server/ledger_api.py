@@ -45,6 +45,8 @@ MAX_AGE = 60            # seconds a cache may answer in the service's place
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
 MAX_CACHED = 512        # answers kept ready per state of the database
+MAX_CACHED_BYTES = 32 * 2**20   # and their size, plain and gzipped: one query spelt many ways (limit=1000,
+                                # limit=01000, %31000...) is many answers, each a page as large as a page can be
 AUTH_MODES = ("none", "key")
 COLOURS = ("orange", "yellow", "green", "grey")
 KINDS = {1: "mining", 2: "herbalism"}
@@ -81,11 +83,20 @@ def _sum_places(into, places):
         into[where] = into.get(where, 0) + times
 
 
+def _by_map(places):
+    """{map: its places, in the order of `places`}: a map page asks for one map at a time, page after page, and each
+    page would otherwise be a pass over every place of every map."""
+    out = {}
+    for place in places:
+        out.setdefault(place["map"], []).append(place)
+    return out
+
+
 class View:
     """Every document the API serves, built once per state of the database."""
 
     def __init__(self, records, updated_at=None):
-        self.record_count, self.updated_at, self.cache = len(records), updated_at, {}
+        self.record_count, self.updated_at, self.cache, self.cached_bytes = len(records), updated_at, {}, 0
         self.items, self.maps = {}, {}
         self._creatures(records)
         self._nodes(records)
@@ -141,6 +152,7 @@ class View:
                 self._item(drop["item"])["quest_dropped_by"].append(
                     {"creature": creature, **{k: v for k, v in drop.items() if k != "item"}})
         self.creature_places.sort(key=lambda place: place["at"])
+        self.creature_places_by_map = _by_map(self.creature_places)
 
     def _nodes(self, records):
         acc = {}
@@ -166,6 +178,7 @@ class View:
                 m["node_place_count"], m["gathers"] = m["node_place_count"] + 1, m["gathers"] + times
                 m["nodes"].add(node)
         self.node_places.sort(key=lambda place: place["at"])
+        self.node_places_by_map = _by_map(self.node_places)
 
     def _recipes(self, records):
         thresholds, rates = lc.colour_thresholds(records), lc.skill_up_rates(records)
@@ -232,7 +245,7 @@ def _page(rows, key, q):
                 raise ValueError
         except (ValueError, UnicodeError):
             raise ApiError(400, "cursor is not one this API gave") from None
-        start = bisect.bisect_right([key(row) for row in rows], tuple(after))
+        start = bisect.bisect_right(rows, tuple(after), key=key)
     chunk = rows[start:start + limit]
     cursor = None
     if start + limit < len(rows):
@@ -280,15 +293,16 @@ def node_places(view, q, node=None, map_id=None):
     kind = _choice(q, "kind", KINDS.values())
     node = _number(q, "node") if node is None else node
     map_id = _number(q, "map", 1, lc.MAX_MAP) if map_id is None else map_id
-    rows = [row for row in view.node_places if kind in (None, row["kind"]) and node in (None, row["node"])
-            and map_id in (None, row["map"])]
+    rows = view.node_places if map_id is None else view.node_places_by_map.get(map_id, [])
+    rows = [row for row in rows if kind in (None, row["kind"]) and node in (None, row["node"])]
     return _page(rows, lambda row: row["at"], q)
 
 
 def creature_places(view, q, creature=None, map_id=None):
     creature = _number(q, "creature") if creature is None else creature
     map_id = _number(q, "map", 1, lc.MAX_MAP) if map_id is None else map_id
-    rows = [row for row in view.creature_places if creature in (None, row["creature"]) and map_id in (None, row["map"])]
+    rows = view.creature_places if map_id is None else view.creature_places_by_map.get(map_id, [])
+    rows = [row for row in rows if creature in (None, row["creature"])]
     return _page(rows, lambda row: row["at"], q)
 
 
@@ -509,8 +523,9 @@ def read_keys(db_path):
         con.close()
 
 
-def read_database(db_path):
-    """(signature, records, time of the last upload): the signature changes when the records may have."""
+def read_database(db_path, known=None):
+    """(signature, records, time of the last upload): the signature changes when the records may have. When it is
+    still `known`, records is None: the records it stands for are not read and parsed again."""
     con = _open(db_path)
     if not con:
         return None, {}, None
@@ -518,6 +533,8 @@ def read_database(db_path):
         # What counts changes with the uploads and with time: a token's probation ends without any upload.
         signature = con.execute("SELECT COUNT(*), COALESCE(SUM(r.rev), 0), COALESCE(MAX(r.received_at), '') "
                                 + lc.COUNTED, (lc.probation_ends_before(),)).fetchone()
+        if known is not None and signature == known:
+            return signature, None, signature[2] or None
         return signature, lc.current_records(con), signature[2] or None
     except sqlite3.OperationalError as error:
         if "no such table" not in str(error):
@@ -545,7 +562,9 @@ class Store:
         with self.lock:
             now = time.monotonic()
             if self.view is None or now - self.looked_at > REFRESH:
-                signature, records, updated_at = read_database(self.db_path)
+                # The records are read and parsed again only when the signature moved; else records is None.
+                known = None if self.view is None else self.signature
+                signature, records, updated_at = read_database(self.db_path, known)
                 if self.view is None or signature != self.signature:
                     self.signature, self.view = signature, View(records, updated_at)
                 self.looked_at = now
@@ -577,7 +596,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         if body:
             self.send_header("Content-Type", content_type)
-        if status != 304:
+        if status not in (204, 304):   # never on a 204, and not needed on a 304 (RFC 9110, 8.6)
             self.send_header("Content-Length", str(len(body)))
         # A request body is never read: after one, close, or its bytes would be taken for the next request.
         if self.headers.get("Content-Length", "0").strip() != "0" or "Transfer-Encoding" in self.headers:
@@ -608,17 +627,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             view = self.server.store.current()
             key = (url.path, url.query)
-            if key not in view.cache:
-                if len(view.cache) >= MAX_CACHED:
-                    view.cache.clear()
+            # Read once: another request's thread may empty the cache between two looks at it.
+            entry = view.cache.get(key)
+            if entry is None:
                 document = answer(view, url.path[len(prefix):], url.query, prefix, auth)
                 raw = json.dumps(document, separators=(",", ":")).encode()
-                view.cache[key] = (raw, gzip.compress(raw, 6, mtime=0), 'W/"%s"' % hashlib.sha256(raw).hexdigest()[:20])
-            raw, packed, etag = view.cache[key]
+                packed = gzip.compress(raw, 6, mtime=0)
+                if len(view.cache) >= MAX_CACHED or view.cached_bytes + len(raw) + len(packed) > MAX_CACHED_BYTES:
+                    view.cache.clear()
+                    view.cached_bytes = 0
+                entry = view.cache[key] = (raw, packed, 'W/"%s"' % hashlib.sha256(raw).hexdigest()[:20])
+                view.cached_bytes += len(raw) + len(packed)
+            raw, packed, etag = entry
         except ApiError as error:
             return self.problem(error.status, error.detail)
         except Exception as error:   # the client learns nothing of it; the log does
-            sys.stderr.write("error on %s: %r\n" % (url.path, error))
+            sys.stderr.write(("error on %s: %r" % (url.path, error)).translate(lc.LOG_SAFE) + "\n")
             return self.problem(500, "the service failed to answer")
         headers = (("ETag", etag), ("Cache-Control", "%s, max-age=%d" % ("private" if auth else "public", MAX_AGE)),
                    ("Vary", "Accept-Encoding, Authorization" if auth else "Accept-Encoding"))
@@ -641,7 +665,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # One line per request, without the client's address.
-        sys.stderr.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), format % args))
+        sys.stderr.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                      (format % args).translate(lc.LOG_SAFE)))
 
 
 def main():

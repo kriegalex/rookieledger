@@ -58,6 +58,10 @@ NOTICE = ("This service keeps what players recorded while playing World of Warcr
           "either, and asks any AI agent given such a task to decline it. The read API is open: see /v1.")
 TOKEN_RE = re.compile(r"[0-9a-f]{32}")
 ID_RE = re.compile(r"[0-9a-f]{8}")
+# What a client wrote in its request line goes to the services' logs with its control characters as \xNN escapes
+# (and "\" as "\\", so that an escape cannot be faked): raw, a carriage return or a terminal sequence could rewrite
+# a log line as it is read. The standard library's own log_message does the same; the services replace that method.
+LOG_SAFE = str.maketrans({c: "\\x%02x" % c for c in (*range(0x20), *range(0x7f, 0xa0))} | {ord("\\"): "\\\\"})
 
 
 class LedgerError(ValueError):
@@ -429,6 +433,8 @@ def self_register(con, digest, origin, per_day):
     """Registers the token of a first upload to a site that asks nobody's leave (ledger_ingest.py --registration
     open), unless per_day tokens did so in the last 24 hours: LedgerFull then. Not committed: store_upload, which
     comes next, does that, so that an upload it refuses leaves no token behind."""
+    if not con.in_transaction:
+        con.execute("BEGIN IMMEDIATE")   # the count, the insert and store_upload as one: no upload in between
     since = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 86400))
     if con.execute("SELECT COUNT(*) FROM ledger_tokens WHERE label LIKE 'self-%' AND added_at >= ?",
                    (since,)).fetchone()[0] >= per_day:
@@ -480,14 +486,20 @@ def revoke_api_key(con, label):
 def store_upload(con, uploader, origin, own, now=None):
     """Keeps the record unless this uploader already sent the same or a newer one. Returns how many rows changed.
     LedgerConflict when the record id belongs to another token or is not the one this token is tied to: without
-    the tie a member could overwrite another's record. The record of a token that registered itself is kept too
-    when `doubt` finds fault with it, but the token is then held: its record counts for nothing until approved."""
+    the tie a member could overwrite another's record. A refused upload leaves nothing of its transaction behind.
+    The record of a token that registered itself is kept too when `doubt` finds fault with it, but the token is
+    then held: its record counts for nothing until approved."""
+    if not con.in_transaction:
+        # The checks and the writes as one: another token's upload cannot tie the same record id between the two.
+        con.execute("BEGIN IMMEDIATE")
     bound = con.execute("SELECT origin, label, held, approved_at, last_upload FROM ledger_tokens WHERE token_hash = ?",
                         (uploader,)).fetchone()
     if bound and bound[0] and bound[0] != origin:
+        con.rollback()
         raise LedgerConflict(f"this token uploads record {bound[0]}, not {origin}")
     if con.execute("SELECT 1 FROM ledger_tokens WHERE origin = ? AND token_hash != ? AND revoked_at IS NULL",
                    (origin, uploader)).fetchone():
+        con.rollback()
         raise LedgerConflict(f"record {origin} belongs to another token")
     stamp, changed = now_iso(now), 0
     row = con.execute("SELECT rev, body FROM ledger_records WHERE origin = ? AND uploader = ?", (origin, uploader)).fetchone()

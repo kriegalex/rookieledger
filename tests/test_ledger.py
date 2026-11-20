@@ -397,6 +397,7 @@ class Endpoint(unittest.TestCase):
         answer = self.raw(status + b"Content-Length: %d\r\n\r\n" % len(second) + second)
         self.assertTrue(answer.startswith(b"HTTP/1.1 204"), answer[:60])
         self.assertEqual(answer.count(b"HTTP/1.1 "), 1, answer)
+        self.assertNotIn(b"Content-Length", answer, "a 204 never says its length")
         # An upload whose length int() cannot read, or that does not say where its body ends.
         upload = b"POST /v1/ledger/upload HTTP/1.1\r\n" + head
         for length in (b"Content-Length: \xb2\r\n", b"Content-Length: " + b"9" * 5000 + b"\r\n",
@@ -409,6 +410,38 @@ class Endpoint(unittest.TestCase):
         ledger_ingest.MIN_INTERVAL = 60
         self.assertEqual(self.call("upload", body=SAVED.encode())[0], 200)
         self.assertEqual(self.call("upload", body=SAVED.encode())[0], 429)
+
+    def test_one_file_is_parsed_at_a_time(self):
+        self.register()
+        answers = []
+        with self.server.parsing:   # as while another upload is parsed
+            upload = threading.Thread(target=lambda: answers.append(self.call("upload", body=SAVED.encode())[0]))
+            upload.start()
+            upload.join(0.5)
+            self.assertEqual(answers, [], "an upload waits for the one being parsed")
+        upload.join(10)
+        self.assertEqual(answers, [200])
+
+
+class Hardening(unittest.TestCase):
+    def test_upload_times_of_past_tokens_are_forgotten(self):
+        tokens = ledger_ingest.Tokens(None, open_to_all=True)
+        with mock.patch.object(ledger_ingest, "MIN_INTERVAL", 20), mock.patch("time.monotonic") as now:
+            now.return_value = 1000.0
+            self.assertTrue(tokens.may_upload("a"))
+            now.return_value = 1010.0
+            self.assertFalse(tokens.may_upload("a"))
+            self.assertTrue(tokens.may_upload("b"))
+            now.return_value = 1025.0
+            self.assertTrue(tokens.may_upload("c"))
+            self.assertEqual(sorted(tokens.last_upload), ["b", "c"], "a's time is past MIN_INTERVAL and forgotten")
+            self.assertFalse(tokens.may_upload("b"), "b's is not")
+
+    def test_the_log_writes_no_control_character(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as log:
+            ledger_ingest.Handler.log_message(None, '"%s" %s %s', "GET /\x1b[2J\rfake\\x0d HTTP/1.1", "404", "-")
+        self.assertTrue(log.getvalue().endswith(' "GET /\\x1b[2J\\x0dfake\\\\x0d HTTP/1.1" 404 -\n'), log.getvalue())
+        self.assertEqual(log.getvalue().count("\n"), 1)
 
 
 # SAVED as an addon from v0.6.0 on writes it: begun days ago, two hours of play.
@@ -569,6 +602,38 @@ class Trust(unittest.TestCase):
         self.assertEqual(lc.revoke_token(self.con, "dddddddd"), 1)
         self.assertEqual(len(lc.digest(self.con, now=self.NOW + 30 * 86400)), 1)
 
+    def test_two_tokens_cannot_tie_one_record_at_once(self):
+        lc.add_token(self.con, TOKEN, "A")
+        lc.add_token(self.con, OTHER, "B")
+        checked, results, real = threading.Event(), {}, lc.now_iso
+
+        def slow(at=None):   # A's upload stops between its checks and its writes, and B's comes in then
+            if threading.current_thread().name == "A" and not checked.is_set():
+                checked.set()
+                time.sleep(0.5)
+            return real(at)
+
+        def upload(token):
+            con = lc.connect(self.dir / "ledger.sqlite")
+            try:
+                lc.store_upload(con, lc.token_hash(token), "0876cf1e", self.record(10, 600), self.NOW)
+                results[threading.current_thread().name] = "kept"
+            except lc.LedgerConflict:
+                results[threading.current_thread().name] = "refused"
+            finally:
+                con.close()
+
+        with mock.patch.object(lc, "now_iso", slow):
+            first = threading.Thread(target=upload, args=(TOKEN,), name="A")
+            first.start()
+            self.assertTrue(checked.wait(10))
+            second = threading.Thread(target=upload, args=(OTHER,), name="B")
+            second.start()
+            first.join(40)
+            second.join(40)
+        self.assertEqual(results, {"A": "kept", "B": "refused"})
+        self.assertEqual(self.con.execute("SELECT label FROM ledger_tokens WHERE origin = '0876cf1e'").fetchall(), [("A",)])
+
     def test_a_database_of_before_is_brought_up_to_date(self):
         old = self.dir / "old.sqlite"
         con = sqlite3.connect(old)
@@ -581,6 +646,25 @@ class Trust(unittest.TestCase):
         lc.store_upload(con, "h", "0876cf1e", self.record(10, 0), self.NOW)
         self.assertEqual(sorted(lc.current_records(con, self.NOW)), ["0876cf1e"])
         con.close()
+
+
+class Package(unittest.TestCase):
+    # The packager copies the whole repository into the addon's folder and leaves out only what .pkgmeta ignores
+    # (and dotfiles): a new folder at the top goes into the zip unless it is named there.
+    def test_pkgmeta_leaves_out_all_but_the_addon(self):
+        try:
+            run = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True, timeout=60)
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("not a git checkout")
+        top = {path.split("/", 1)[0] for path in run.stdout.splitlines() if path}
+        ignored, in_ignore = set(), False
+        for line in (ROOT / ".pkgmeta").read_text().splitlines():
+            if line and not line[0].isspace():
+                in_ignore = line.rstrip() == "ignore:"
+            elif in_ignore and line.strip().startswith("- "):
+                ignored.add(line.strip()[2:].strip())
+        shipped = {name for name in top - ignored if not name.startswith(".")}
+        self.assertEqual(shipped, {"addon", "LICENSE", "CHANGELOG.md"})
 
 
 # Skipped only on a developer's machine without lua5.1: in CI a missing lua5.1 is an error, not a green run without

@@ -43,6 +43,7 @@ class Tokens:
     def __init__(self, db_path, open_to_all=False):
         self.db_path, self.lock, self.open = db_path, threading.Lock(), open_to_all
         self.hashes, self.revoked, self.read_at, self.last_upload, self.unknown = set(), set(), 0.0, {}, []
+        self.pruned_at = 0.0
 
     def known(self, token):
         """(token hash, registered) of a token that may upload, or None. On an open site a token never seen may
@@ -79,6 +80,11 @@ class Tokens:
     def may_upload(self, digest):
         with self.lock:
             now = time.monotonic()
+            if now - self.pruned_at >= MIN_INTERVAL:
+                # Only the last MIN_INTERVAL counts. On an open site every made-up token passes here: kept for good,
+                # each would hold memory until the process ends.
+                self.last_upload = {d: t for d, t in self.last_upload.items() if now - t < MIN_INTERVAL}
+                self.pruned_at = now
             if now - self.last_upload.get(digest, -MIN_INTERVAL) < MIN_INTERVAL:
                 return False
             self.last_upload[digest] = now
@@ -93,6 +99,7 @@ class Server(ThreadingHTTPServer):
             raise ValueError("registration is one of: " + ", ".join(REGISTRATION))
         lc.connect(db_path).close()   # create the tables before the first request
         self.db_path, self.tokens = db_path, Tokens(db_path, registration == "open")
+        self.parsing = threading.Lock()   # see do_POST
         super().__init__(address, Handler)
 
 
@@ -110,7 +117,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         if data:
             self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
+        if status != 204:   # a 204 has no body and never says its length (RFC 9110, 8.6)
+            self.send_header("Content-Length", str(len(data)))
         if close:
             self.send_header("Connection", "close")
             self.close_connection = True
@@ -152,14 +160,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(429, {"error": "too many new members right now; the app tries again later"}, close=True)
         data = self.rfile.read(int(length))
         try:
-            if self.headers.get("Content-Encoding") == "gzip":
-                inflater = zlib.decompressobj(31)
-                data = inflater.decompress(data, MAX_TEXT)
-                if inflater.unconsumed_tail:
+            # One file is read at a time. A few kB of gzip can unpack to MAX_VALUES empty tables, which take over
+            # 100 MiB while they are parsed: two at once would be more than the service's container may hold.
+            with self.server.parsing:
+                if self.headers.get("Content-Encoding") == "gzip":
+                    inflater = zlib.decompressobj(31)
+                    data = inflater.decompress(data, MAX_TEXT)
+                    if inflater.unconsumed_tail:
+                        raise lc.LedgerError("file too large")
+                if len(data) > MAX_TEXT:
                     raise lc.LedgerError("file too large")
-            if len(data) > MAX_TEXT:
-                raise lc.LedgerError("file too large")
-            origin, own = lc.check_db(lc.parse_saved_variables(data.decode("utf-8")))
+                origin, own = lc.check_db(lc.parse_saved_variables(data.decode("utf-8")))
         except (lc.LedgerError, zlib.error, UnicodeDecodeError, RecursionError) as error:
             return self.reply(400, {"error": str(error)})
         con = lc.connect(self.server.db_path)
@@ -179,7 +190,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # One line per request, without the Authorization header and without the client's address.
-        sys.stderr.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), format % args))
+        sys.stderr.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                      (format % args).translate(lc.LOG_SAFE)))
 
 
 def main():

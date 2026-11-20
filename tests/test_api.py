@@ -1,6 +1,6 @@
 """RookieLedger read API: the totals it serves, its paging, its HTTP manners, its key switch, and that every answer
 is what its OpenAPI document says. The service runs on a free local port with a temporary database."""
-import gzip, json, shutil, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import gzip, io, json, shutil, sys, tempfile, threading, unittest, urllib.error, urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -266,6 +266,16 @@ class Http(Service):
         con.close()
         self.assertEqual(json.loads(self.call("/v1/creatures/1674")[2])["corpses"], 6)
 
+    def test_records_are_read_again_only_after_a_change(self):
+        self.upload()
+        with mock.patch.object(lc, "current_records", wraps=lc.current_records) as read:
+            for _ in range(3):   # REFRESH is -1 here: every request looks at the database
+                self.assertEqual(self.call("/v1/creatures")[0], 200)
+            self.assertEqual(read.call_count, 1)
+            self.upload("1234abcd", SECOND, "fedcba9876543210fedcba9876543210")
+            self.assertEqual(json.loads(self.call("/v1/creatures/1674")[2])["corpses"], 10)
+            self.assertEqual(read.call_count, 2)
+
     def test_caching_compression_and_origins(self):
         self.upload()
         status, headers, body = self.call("/v1/creatures")
@@ -286,6 +296,19 @@ class Http(Service):
         status, headers, _ = self.call("/v1/creatures", "OPTIONS",
                                        {"Origin": "https://example.org", "Access-Control-Request-Method": "GET"})
         self.assertEqual((status, headers["Access-Control-Allow-Methods"]), (204, "GET, HEAD, OPTIONS"))
+        self.assertNotIn("Content-Length", headers, "a 204 never says its length")
+
+    def test_an_answer_does_not_need_the_cache_to_keep_it(self):
+        class Forgetful(dict):   # emptied as soon as an answer is put in it, as another request's thread may do
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                self.clear()
+
+        self.upload()
+        self.assertEqual(self.call("/v1")[0], 200)
+        self.server.store.current().cache = Forgetful()
+        status, _, body = self.call("/v1/creatures/1674")
+        self.assertEqual((status, json.loads(body)["corpses"]), (200, 6))
 
     def test_errors_are_problem_documents(self):
         for path, method, status in (("/v1/creatures/9", "GET", 404), ("/v1/creatures?itme=1", "GET", 400),
@@ -298,6 +321,20 @@ class Http(Service):
             self.assertTrue(problem["title"] and problem["detail"] and problem["type"])
         self.assertEqual(self.call("/v1/creatures", "POST")[1]["Allow"], "GET, HEAD, OPTIONS")
         self.assertEqual(self.call("/healthz")[::2], (200, b'{"status":"ok"}'))
+
+    def test_answers_kept_ready_stay_within_their_budget(self):
+        self.upload()
+        page = self.call("/v1/creatures?limit=1000")[2]
+        budget = 3 * len(page)
+        with mock.patch.object(ledger_api, "MAX_CACHED_BYTES", budget):
+            # One query spelt five ways is five answers to keep.
+            for spelling in ("limit=1000", "limit=01000", "limit=001000", "%6Cimit=1000", "limit=%31000"):
+                self.assertEqual(self.call("/v1/creatures?" + spelling)[2], page, spelling)
+                view = self.server.store.view
+                kept = sum(len(raw) + len(packed) for raw, packed, _etag in view.cache.values())
+                self.assertEqual(view.cached_bytes, kept)
+                self.assertLessEqual(kept, budget)
+            self.assertLess(len(view.cache), 5)
 
     def test_the_document_is_served_and_asks_for_no_key(self):
         spec = json.loads(self.call("/v1/openapi.json")[2])
@@ -345,6 +382,13 @@ class Keys(Service):
 
 
 del Service   # the base class has no test of its own
+
+
+class Log(unittest.TestCase):
+    def test_the_log_writes_no_control_character(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as log:
+            ledger_api.Handler.log_message(None, '"%s" %s %s', "GET /v1/\x1b[2J\rfake HTTP/1.1", "404", "-")
+        self.assertTrue(log.getvalue().endswith(' "GET /v1/\\x1b[2J\\x0dfake HTTP/1.1" 404 -\n'), log.getvalue())
 
 
 if __name__ == "__main__":
