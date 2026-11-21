@@ -115,6 +115,12 @@ that file and uploads it.
    answers, when your data was last synced and whether the addon's data was found. Closing it leaves the app
    running behind its icon in the notification area: a click on the icon shows the window again, a right-click
    offers to show or hide it, or to quit. To update, download the new version and double-click it.
+   The right-click menu also holds two settings. *Start with Windows* is ticked at first: untick it and the app
+   runs only when you start it. *Show details (debug)* makes the window say why something does not work: why the
+   site was not reached (no connection, a name not found, a firewall or antivirus in between, the site down), and
+   what was found of the game (each install with its accounts, whether the addon is there and has saved, or a
+   `World of Warcraft` folder that holds another version of the game but not `_forever_`). The same details go to
+   the app's log, `%AppData%\RookieLedgerSync\sync.log`.
    Linux: `chmod +x rookieledger-sync-linux-amd64 && ./rookieledger-sync-linux-amd64 --install` (a systemd user unit).
 3. Play. On a site open to all, such as the one this addon was written for, uploads start by themselves after your
    next game session. On a site that registers tokens by hand, type `/ledger token` in game and give the token to
@@ -127,7 +133,7 @@ block unsigned programs with no bypass.
 
 | Option | What it does |
 |---|---|
-| `--status` | Shows the saved files found, their tokens and why the site refused a file, then exits |
+| `--status` | Shows the saved files found, their tokens and why the site refused a file, or what was found of the game when there is none, then exits |
 | `--once` | One pass, then exits |
 | `--install` / `--uninstall` | Adds or removes the start with your session (Windows: `--uninstall` also stops and removes the installed copy) |
 | `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself (remembered) |

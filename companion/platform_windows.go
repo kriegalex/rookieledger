@@ -210,6 +210,38 @@ func registerRun(exe string) error {
 	})
 }
 
+func unregisterRun() error {
+	err := runKeyValue(func(key syscall.Handle, name *uint16) uintptr {
+		code, _, _ := advapi32.NewProc("RegDeleteValueW").Call(uintptr(key), uintptr(unsafe.Pointer(name)))
+		return code
+	})
+	if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
+		err = nil // it was not there
+	}
+	return err
+}
+
+// setAutostart follows the setting of the window's menu: the Run key names this running copy, or nothing does.
+// Not for the Store package, whose start with the session is Windows' to switch (openStartupSettings).
+func setAutostart(on bool) error {
+	if !on {
+		return unregisterRun()
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return registerRun(self)
+}
+
+// openStartupSettings shows the page of Windows' settings that lists what starts with the session: where the
+// Store package's start is switched on and off.
+func openStartupSettings() {
+	verb, _ := syscall.UTF16PtrFromString("open")
+	page, _ := syscall.UTF16PtrFromString("ms-settings:startupapps")
+	shell32.NewProc("ShellExecuteW").Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(page)), 0, 0, 1)
+}
+
 func installAutostart() error {
 	exe, err := installedExe()
 	if err != nil {
@@ -220,13 +252,7 @@ func installAutostart() error {
 
 // removeAutostart undoes the installation: the Run key, the running copy and the installed file.
 func removeAutostart() error {
-	err := runKeyValue(func(key syscall.Handle, name *uint16) uintptr {
-		code, _, _ := advapi32.NewProc("RegDeleteValueW").Call(uintptr(key), uintptr(unsafe.Pointer(name)))
-		return code
-	})
-	if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
-		err = nil // it was not installed
-	}
+	err := unregisterRun()
 	if dir, dirErr := os.UserConfigDir(); dirErr == nil {
 		stopRunning(filepath.Join(dir, "RookieLedgerSync"))
 	}
@@ -272,7 +298,6 @@ func packaged() bool {
 func settle(dir string, st *state, renewed bool) (release func(), proceed bool) {
 	self, selfErr := os.Executable()
 	target, targetErr := installedExe()
-	runFrom := self
 	store := packaged()
 	if !store && selfErr == nil && targetErr == nil && !samePath(self, target) {
 		err := installCopy(dir, self, target)
@@ -281,18 +306,10 @@ func settle(dir string, st *state, renewed bool) (release func(), proceed bool) 
 			err = exec.Command(target, os.Args[1:]...).Start()
 		}
 		if err == nil {
-			// The installed copy opens its window, which says the rest.
-			if regErr := registerRun(target); regErr != nil {
-				notify(text("noautostart") + regErr.Error())
-			}
+			// The installed copy opens its window, which says the rest, and sees to the start with the session.
 			return nil, false
 		}
 		log.Printf("not installed to %s (%v): running from %s", target, err, self)
-	}
-	if !store && selfErr == nil {
-		if err := registerRun(runFrom); err != nil {
-			log.Printf("autostart not installed: %v", err)
-		}
 	}
 	release, running, err := lockInstance()
 	if running && renewed && askToQuit() {
@@ -310,6 +327,12 @@ func settle(dir string, st *state, renewed bool) (release func(), proceed bool) 
 	if err != nil {
 		log.Printf("no instance lock: %v", err)
 	}
+	// Every start puts the start with the session as the setting has it: on unless the person switched it off.
+	if !store && selfErr == nil {
+		if err := setAutostart(st.autostart()); err != nil {
+			log.Printf("start with the session not set: %v", err)
+		}
+	}
 	_ = os.WriteFile(pidFile(dir), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	return release, true
 }
@@ -326,13 +349,15 @@ func french() bool {
 	return lang&0x3ff == 0x0c
 }
 
-func setupLog(path string) {
+// setupLog sends the log to a file, the program having no console, and returns where that is.
+func setupLog(path string) string {
 	if info, err := os.Stat(path); err == nil && info.Size() > maxLogBytes {
 		_ = os.Remove(path)
 	}
 	if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		log.SetOutput(f)
-	} else {
-		log.SetOutput(io.Discard)
+		return path
 	}
+	log.SetOutput(io.Discard)
+	return ""
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -311,8 +312,8 @@ func TestWindowAsksWhetherTheSiteIsUpWithoutAToken(t *testing.T) {
 	if v := s.view(); web.hits != 1 || web.withToken != 0 || !v.Up || v.Files != 0 {
 		t.Fatalf("%d requests, %d with a token, view %+v", web.hits, web.withToken, v)
 	}
-	if changes != 1 {
-		t.Fatalf("the window was told %d times of one change", changes)
+	if changes != 2 { // what was found of the game, then the site's answer: both on the first pass
+		t.Fatalf("the window was told %d times of two changes", changes)
 	}
 	web.code = http.StatusServiceUnavailable // the front door answers, the site behind it does not
 	s.pass(nil)
@@ -355,5 +356,137 @@ func TestLastSyncIsRemembered(t *testing.T) {
 	saveState(path, s.st)
 	if got := loadState(path).LastSync; !got.Equal(clock) {
 		t.Fatalf("read back %v, wrote %v", got, clock)
+	}
+}
+
+func TestSettingsStartWithTheSessionAndNoDetailsUnlessSwitched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st := loadState(path) // no file yet: a first start
+	if !st.autostart() || st.debug() {
+		t.Fatalf("defaults: autostart %v, debug %v", st.autostart(), st.debug())
+	}
+	saveState(path, st)
+	if data, _ := os.ReadFile(path); strings.Contains(string(data), "autostart") || strings.Contains(string(data), "debug") {
+		t.Fatalf("the defaults are written down: %s", data)
+	}
+	st.change(func() { st.NoAutostart, st.Debug = true, true })
+	saveState(path, st)
+	if again := loadState(path); again.autostart() || !again.debug() {
+		t.Fatalf("settings not remembered: autostart %v, debug %v", again.autostart(), again.debug())
+	}
+}
+
+func TestDetailsSayWhyTheSiteIsNotReached(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	web := &door{code: http.StatusUnauthorized}
+	server := httptest.NewServer(web)
+	clock := time.Now()
+	s := newSyncer(server.URL, &clock)
+	s.logPath = "sync.log"
+	ask := func() view {
+		_, _, _ = s.request("GET", "status", "", nil)
+		return s.view()
+	}
+	if v := ask(); !v.Up || v.Problem != "" {
+		t.Fatalf("an answer is no problem: %+v", v)
+	}
+	if got := s.details(); got != "Uploads to "+server.URL+"\nLog: sync.log" {
+		t.Fatalf("details with nothing wrong: %q", got)
+	}
+	web.code = http.StatusBadGateway
+	if v := ask(); v.Up || !strings.Contains(v.Problem, "502") {
+		t.Fatalf("a gateway's answer: %+v", v)
+	}
+	server.Close()
+	if v := ask(); v.Up || !strings.HasPrefix(v.Problem, texts["noconnect"][0]+" (") {
+		t.Fatalf("nobody listening: %+v", v)
+	}
+	if !strings.Contains(s.details(), texts["noconnect"][0]) {
+		t.Fatalf("the details leave the problem out: %q", s.details())
+	}
+	s.url = "http://rookieledger.invalid" // a name that never resolves (RFC 6761)
+	if v := ask(); v.Up || !strings.HasPrefix(v.Problem, texts["nodns"][0]) {
+		t.Fatalf("a name not found: %+v", v)
+	}
+	s.url, s.client.Timeout = "http://"+hang(t), 200*time.Millisecond
+	if v := ask(); v.Up || !strings.HasPrefix(v.Problem, texts["timeout"][0]) {
+		t.Fatalf("no answer in time: %+v", v)
+	}
+}
+
+// hang is the address of a listener that takes connections and never answers.
+func hang(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	return l.Addr().String()
+}
+
+func TestDetailsSayThatATokenWaits(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	web := &site{}
+	server := httptest.NewServer(web)
+	defer server.Close()
+	root := t.TempDir()
+	writeSaved(t, root, "ONE", saved(""))
+	clock := time.Now()
+	s := newSyncer(server.URL, &clock)
+	s.pass([]string{root})
+	if !s.view().Waiting || !strings.Contains(s.details(), texts["dwaiting"][0]) {
+		t.Fatalf("a token the site does not know: %+v, %q", s.view(), s.details())
+	}
+	web.registered = true
+	clock = clock.Add(recheckEvery)
+	s.pass([]string{root})
+	if s.view().Waiting || strings.Contains(s.details(), texts["dwaiting"][0]) || web.uploads != 1 {
+		t.Fatalf("once registered: %+v, %d uploads", s.view(), web.uploads)
+	}
+}
+
+func TestGameDetailsSayWhatIsMissing(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	dir := t.TempDir()
+	mk := func(parts ...string) string {
+		path := filepath.Join(append([]string{dir}, parts...)...)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// No install: the folders that were looked at and are something else, and a --wow-dir that is gone.
+	retail := filepath.Dir(mk("Games", "World of Warcraft", "_retail_"))
+	mk("Games", "World of Warcraft", "_classic_")
+	empty := mk("Empty")
+	gone := filepath.Join(dir, "gone")
+	got := strings.Split(gameDetails(nil, []string{filepath.Join(dir, "*", "World of Warcraft"), retail,
+		filepath.Join(retail, "_retail_"), filepath.Join(dir, "none"), empty}, []string{gone}), "\n")
+	want := []string{texts["dnofolder"][0], retail + " holds _classic_, _retail_, but not _forever_: WoW Forever is not installed there.",
+		empty + " exists, but holds no game.", "The folder given with --wow-dir does not exist: " + gone}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("no install:\n%s\nwanted:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// An install, step by step up to the addon's first saved file.
+	root := mk("Forever")
+	mk("Forever", flavor)
+	line := func() string { return gameDetails([]string{root}, nil, nil) }
+	start := "Game: " + root + ", "
+	if got := line(); got != start+"0 account(s), 0 with the addon's data."+texts["dnoaddon"][0] {
+		t.Fatalf("no addon: %q", got)
+	}
+	mk("Forever", flavor, "Interface", "AddOns", "RookieLedger")
+	if got := line(); got != start+"0 account(s), 0 with the addon's data."+texts["dnologin"][0] {
+		t.Fatalf("never logged in: %q", got)
+	}
+	mk("Forever", flavor, "WTF", "Account", "ONE")
+	mk("Forever", flavor, "WTF", "Account", "SavedVariables") // not an account
+	if got := line(); got != start+"1 account(s), 0 with the addon's data."+texts["dnologout"][0] {
+		t.Fatalf("nothing saved yet: %q", got)
+	}
+	writeSaved(t, root, "ONE", saved(""))
+	if got := line(); got != start+"1 account(s), 1 with the addon's data." {
+		t.Fatalf("all there: %q", got)
 	}
 }

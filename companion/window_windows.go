@@ -14,7 +14,8 @@ import (
 // The program shows an icon in the notification area and a small window: whether the site answers, when a file was
 // last accepted, and whether the addon's data was found. The window opens when a person starts the program and
 // stays closed when the session does (--background); its close button hides it, and the icon's menu shows it again
-// or quits.
+// or quits. That menu also holds the two settings: whether the program starts with the session, and whether the
+// window says more (the debug setting: below its three lines, why the site or the game's data is not found).
 //
 // The window is drawn by hand, in the manner of Windows 11: the system's font, a rounded card on the settings
 // pages' grey, light or dark as the person chose for apps, and at the scale of the screen it is on. Shapes go
@@ -55,8 +56,10 @@ const (
 	msgChange = wmApp + 2 // the view changed
 	msgQuit   = wmApp + 3 // a newer copy asks this one to leave
 
-	menuToggle = 1
-	menuQuit   = 2
+	menuToggle    = 1
+	menuQuit      = 2
+	menuAutostart = 3
+	menuDebug     = 4
 
 	windowStyle = 0x00C80000 // WS_CAPTION | WS_SYSMENU: a fixed size, a close button
 
@@ -65,6 +68,7 @@ const (
 	margin                 = 24
 	cardTop, rowHigh       = 86, 40
 	column                 = 184 // where the values start
+	debugHigh              = 196 // what the debug setting adds below: a rule, then the details
 )
 
 // colours of the window, each as 0xRRGGBB.
@@ -140,6 +144,7 @@ type window struct {
 	picture     uintptr // the large icon as a GDI+ image, for the window's heading
 	colours     palette
 	taskbarBack uint32 // the message Explorer sends when it starts again and has lost every icon
+	store       bool   // run from the Store package: Windows holds the switch of the start with the session
 }
 
 var win *window // the one window, for its procedure
@@ -208,6 +213,14 @@ func darkApps() bool {
 }
 
 func (w *window) px(n int32) int32 { return (n*w.dpi + 48) / 96 }
+
+// high is the height of the window's inside, in the pixels of a screen at 100 %.
+func (w *window) high() int32 {
+	if w.s.st.debug() {
+		return clientHigh + debugHigh
+	}
+	return clientHigh
+}
 
 func (w *window) makeFont(points, weight int32) uintptr {
 	return call(gdi32, "CreateFontW", uintptr(-((points*w.dpi + 36) / 72)), 0, 0, 0, uintptr(weight), 0, 0, 0,
@@ -282,7 +295,7 @@ func (w *window) scale(dpi int32, place *rect) {
 		call(user32, "SetWindowPos", w.hwnd, 0, uintptr(place.left), uintptr(place.top),
 			uintptr(place.right-place.left), uintptr(place.bottom-place.top), noZOrder|noActivate)
 	} else {
-		frame := rect{0, 0, w.px(clientWide), w.px(clientHigh)}
+		frame := rect{0, 0, w.px(clientWide), w.px(w.high())}
 		if !has(user32, "AdjustWindowRectExForDpi") ||
 			call(user32, "AdjustWindowRectExForDpi", uintptr(unsafe.Pointer(&frame)), windowStyle, 0, 0, uintptr(dpi)) == 0 {
 			call(user32, "AdjustWindowRectEx", uintptr(unsafe.Pointer(&frame)), windowStyle, 0, 0)
@@ -379,8 +392,21 @@ func (w *window) menu() {
 	if w.visible() {
 		label = "hidewindow"
 	}
+	checked := func(on bool) uintptr {
+		if on {
+			return 0x8 // MF_CHECKED
+		}
+		return 0
+	}
 	call(user32, "AppendMenuW", menu, 0, menuToggle, uintptr(unsafe.Pointer(utf16(text(label)))))
 	call(user32, "AppendMenuW", menu, 0x800, 0, 0) // MF_SEPARATOR
+	if w.store {
+		call(user32, "AppendMenuW", menu, 0, menuAutostart, uintptr(unsafe.Pointer(utf16(text("startupsettings")))))
+	} else {
+		call(user32, "AppendMenuW", menu, checked(w.s.st.autostart()), menuAutostart, uintptr(unsafe.Pointer(utf16(text("autostart")))))
+	}
+	call(user32, "AppendMenuW", menu, checked(w.s.st.debug()), menuDebug, uintptr(unsafe.Pointer(utf16(text("debug")))))
+	call(user32, "AppendMenuW", menu, 0x800, 0, 0)
 	call(user32, "AppendMenuW", menu, 0, menuQuit, uintptr(unsafe.Pointer(utf16(text("quit")))))
 	var at point
 	call(user32, "GetCursorPos", uintptr(unsafe.Pointer(&at)))
@@ -491,6 +517,9 @@ func (w *window) paint() {
 		last = v.LastSync.Local().Format(text("date"))
 	}
 	data, foot := "…", text("installed")
+	if !w.store && !w.s.st.autostart() {
+		foot = text("manual")
+	}
 	switch {
 	case v.Files == 0:
 		data, foot = text("nodata"), text("hint")
@@ -511,6 +540,35 @@ func (w *window) paint() {
 		write(row[1], w.font, w.colours.ink, value, top, clientWide-inside-value, rowHigh, middle)
 	}
 	write(foot, w.font, w.colours.dim, margin, cardTop+3*rowHigh+14, clientWide-2*margin, 44, 0x0010) // DT_WORDBREAK
+	if w.s.st.debug() {
+		block(w.colours.rule, rect{w.px(margin), w.px(clientHigh), w.px(clientWide - margin), w.px(clientHigh) + 1})
+		// DT_WORDBREAK | DT_EDITCONTROL: a folder's path has no space to break at, and is broken where the line ends.
+		write(w.s.details(), w.font, w.colours.dim, margin, clientHigh+12, clientWide-2*margin, debugHigh-24, 0x0010|0x2000)
+	}
+}
+
+// setAutostart is the menu's first setting. For the Store package, Windows holds the switch: its page is opened.
+func (w *window) setAutostart() {
+	if w.store {
+		openStartupSettings()
+		return
+	}
+	st := w.s.st
+	var on bool
+	st.change(func() { st.NoAutostart = !st.NoAutostart; on = !st.NoAutostart })
+	w.s.save()
+	if err := setAutostart(on); err != nil {
+		notify(text("noautostart") + err.Error())
+	}
+	call(user32, "InvalidateRect", w.hwnd, 0, 0)
+}
+
+// setDebug is the menu's second setting: the window grows by the details, or gives them up.
+func (w *window) setDebug() {
+	st := w.s.st
+	st.change(func() { st.Debug = !st.Debug })
+	w.s.save()
+	w.scale(w.dpi, nil)
 }
 
 func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
@@ -538,6 +596,10 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			w.toggle()
 		case menuQuit:
 			call(user32, "DestroyWindow", hwnd)
+		case menuAutostart:
+			w.setAutostart()
+		case menuDebug:
+			w.setDebug()
 		}
 	case msgChange:
 		w.tray(1) // NIM_MODIFY
@@ -564,7 +626,7 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 
 // serve runs the watching loop beside the window, until the icon's menu quits the program.
 func serve(s *syncer, show bool, watch func()) {
-	w := &window{s: s, dpi: 96, colours: lightColours}
+	w := &window{s: s, dpi: 96, colours: lightColours, store: packaged()}
 	win = w
 	if !w.create() {
 		log.Printf("no window: running without one")

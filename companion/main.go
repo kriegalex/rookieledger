@@ -11,18 +11,24 @@
 //	  --wow-dir DIR   the "World of Warcraft" folder, when it is not found by itself (remembered)
 //	  --url URL       the upload address (remembered; "default" goes back to the RookieLedger site)
 //	  --background    Windows: start without opening the window (how the session starts it)
+//
+// On Windows the menu of its icon holds two settings: whether it starts with the session (it does unless switched
+// off) and whether its window also says why the site or the game's data is not found.
 package main
 
 import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -62,6 +68,31 @@ type state struct {
 	Files     map[string]fileState `json:"files,omitempty"`
 	Installed bool                 `json:"installed,omitempty"`
 	LastSync  time.Time            `json:"last_sync,omitzero"` // when the site last accepted a file
+	// The two settings of the Windows window's menu. Each is written as what the person switched away from the
+	// default, so that a state file of before them, or without them, means the default.
+	NoAutostart bool `json:"no_autostart,omitempty"` // do not start with the session
+	Debug       bool `json:"debug,omitempty"`        // the window also says why something is wrong
+
+	mu sync.Mutex // the window changes the settings while the watching loop notes what it uploaded
+}
+
+// change makes a change to the state that the window or the watching loop may be reading.
+func (st *state) change(f func()) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	f()
+}
+
+func (st *state) autostart() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return !st.NoAutostart
+}
+
+func (st *state) debug() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.Debug
 }
 
 // uploadURL is where this installation uploads: the address given once with --url, else the RookieLedger site.
@@ -92,6 +123,9 @@ type view struct {
 	Checked  time.Time // when the site last answered, or failed to
 	Up       bool      // what that answer was
 	Files    int       // saved files found; -1 before the first look
+	Problem  string    // why the site did not answer the last time it was asked; empty when it did
+	Waiting  bool      // the site does not accept a token yet
+	Game     string    // what was found of the game on this computer, a line per thing (see gameDetails)
 }
 
 type syncer struct {
@@ -102,8 +136,10 @@ type syncer struct {
 	tokens map[string]*tokenStatus
 	now    func() time.Time
 
+	logPath    string        // where the log is written, for the window to say; empty when there is none
 	probeEvery time.Duration // how often to ask whether the site is up when nothing else was sent; 0: never
 	changed    func()        // told when the view changes; may be nil
+	logged     string        // the details last written to the log
 	mu         sync.Mutex    // guards shown
 	shown      view
 }
@@ -145,6 +181,8 @@ func loadState(path string) *state {
 }
 
 func saveState(path string, st *state) {
+	st.mu.Lock() // also one writer of the file at a time
+	defer st.mu.Unlock()
 	data, _ := json.MarshalIndent(st, "", "  ")
 	tmp := path + ".tmp"
 	if os.WriteFile(tmp, data, 0o600) == nil {
@@ -196,6 +234,128 @@ func expandRoots(candidates []string) []string {
 	return out
 }
 
+// accounts counts the WoW accounts that logged in from an install, and those among them that hold the addon's
+// saved file.
+func accounts(root string) (all, withData int) {
+	dir := filepath.Join(root, flavor, "WTF", "Account")
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == "SavedVariables" {
+			continue
+		}
+		all++
+		if _, err := os.Stat(filepath.Join(dir, entry.Name(), "SavedVariables", savedFile)); err == nil {
+			withData++
+		}
+	}
+	return all, withData
+}
+
+// otherFlavors names the game versions a "World of Warcraft" folder holds ("_retail_, _classic_").
+func otherFlavors(dir string) string {
+	var names []string
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if name := entry.Name(); entry.IsDir() && len(name) > 2 && strings.HasPrefix(name, "_") && strings.HasSuffix(name, "_") {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// gameDetails says what was found of the game, a line per thing, for who wonders why no data is found: each
+// install with its accounts and whether the addon is there, or, when no install was found, the folders among the
+// candidates (the places looked in, as names or patterns) that exist without holding WoW Forever, and a folder
+// given with --wow-dir that does not exist.
+func gameDetails(found, candidates, given []string) string {
+	var lines []string
+	for _, root := range found {
+		all, withData := accounts(root)
+		line := fmt.Sprintf(text("dfolder"), root, all, withData)
+		if withData == 0 {
+			_, err := os.Stat(filepath.Join(root, flavor, "Interface", "AddOns", "RookieLedger"))
+			switch {
+			case err != nil:
+				line += text("dnoaddon")
+			case all == 0:
+				line += text("dnologin")
+			default:
+				line += text("dnologout")
+			}
+		}
+		lines = append(lines, line)
+	}
+	if len(found) == 0 {
+		lines = append(lines, text("dnofolder"))
+		seen := map[string]bool{}
+		for _, c := range candidates {
+			matches, _ := filepath.Glob(c)
+			for _, dir := range append([]string{c}, matches...) {
+				key := strings.ToLower(filepath.Clean(dir))
+				info, err := os.Stat(dir)
+				// A folder named like a game version is one inside an install, which is listed by itself.
+				if seen[key] || err != nil || !info.IsDir() || strings.HasPrefix(filepath.Base(dir), "_") || len(seen) >= 3 {
+					continue
+				}
+				seen[key] = true
+				if flavors := otherFlavors(dir); flavors != "" {
+					lines = append(lines, fmt.Sprintf(text("dotherflavor"), dir, flavors))
+				} else {
+					lines = append(lines, fmt.Sprintf(text("dnotwow"), dir))
+				}
+			}
+		}
+	}
+	for _, dir := range given {
+		if _, err := os.Stat(dir); err != nil {
+			lines = append(lines, fmt.Sprintf(text("dnogiven"), dir))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// explain says why the site could not be asked, in words a member can act on, followed by the error as it came:
+// that is what they paste when asking for help.
+func explain(err error) string {
+	var dns *net.DNSError
+	var cert *tls.CertificateVerificationError
+	var timeout interface{ Timeout() bool }
+	why := "noconnect"
+	switch {
+	case errors.As(err, &dns):
+		why = "nodns"
+	case errors.As(err, &cert):
+		why = "nocert"
+	case errors.As(err, &timeout) && timeout.Timeout():
+		why = "timeout"
+	}
+	raw := err.Error()
+	if len(raw) > 200 {
+		raw = raw[:200] + "…"
+	}
+	return text(why) + " (" + raw + ")"
+}
+
+// details is what the window shows below its three lines when the debug setting is on: where it uploads to and
+// why that failed, whether a token waits, what was found of the game, and where the log is.
+func (s *syncer) details() string {
+	v := s.view()
+	lines := []string{text("daddress") + s.url}
+	if v.Problem != "" {
+		lines = append(lines, v.Problem)
+	}
+	if v.Waiting {
+		lines = append(lines, text("dwaiting"))
+	}
+	if v.Game != "" {
+		lines = append(lines, v.Game)
+	}
+	if s.logPath != "" {
+		lines = append(lines, text("dlog")+s.logPath)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func readToken(data []byte) string {
 	if m := tokenRE.FindSubmatch(data); m != nil {
 		return string(m[1])
@@ -225,7 +385,13 @@ func (s *syncer) request(method, path, token string, body []byte) (int, string, 
 	}
 	resp, err := s.client.Do(req)
 	// A gateway's 502 or 503 is an answer, but not the site's: it is down behind its front door.
-	s.show(func(v *view) { v.Checked, v.Up = s.now(), err == nil && resp.StatusCode < 500 })
+	problem := ""
+	if err != nil {
+		problem = explain(err)
+	} else if resp.StatusCode >= 500 {
+		problem = fmt.Sprintf(text("sitedown"), resp.StatusCode)
+	}
+	s.show(func(v *view) { v.Checked, v.Up, v.Problem = s.now(), problem == "", problem })
 	if err != nil {
 		return 0, "", err
 	}
@@ -255,6 +421,7 @@ func (s *syncer) registered(token string) bool {
 		return false
 	}
 	ts.checked = s.now()
+	s.show(func(v *view) { v.Waiting = code == http.StatusUnauthorized })
 	switch {
 	case code == http.StatusNoContent:
 		ts.registered = true
@@ -293,18 +460,21 @@ func (s *syncer) syncFile(path string) {
 		log.Printf("upload failed, will retry: %v", err)
 	case code == http.StatusOK:
 		log.Printf("uploaded %s: %s", filepath.Base(filepath.Dir(filepath.Dir(path))), text)
-		s.st.Files[path] = fileState{SHA: sha}
-		s.st.LastSync = s.now()
+		s.st.change(func() {
+			s.st.Files[path] = fileState{SHA: sha}
+			s.st.LastSync = s.now()
+		})
 		s.save()
 		s.show(func(v *view) { v.LastSync = s.st.LastSync })
 	case code == http.StatusUnauthorized:
 		s.tokens[token] = &tokenStatus{checked: s.now()}
+		s.show(func(v *view) { v.Waiting = true })
 		log.Printf("token no longer accepted; asking again in %s", recheckEvery)
 	case code >= 400 && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests:
 		// The site will not take this content (unreadable, too large, a record id that is not this token's): sending
 		// it again would not help. A new save of the game is tried again, and --status says why this one was refused.
 		log.Printf("the site refused the file (%d %s); waiting for the game to write a new one", code, text)
-		s.st.Files[path] = fileState{SHA: sha, Note: fmt.Sprintf("%d %s", code, text)}
+		s.st.change(func() { s.st.Files[path] = fileState{SHA: sha, Note: fmt.Sprintf("%d %s", code, text)} })
 		s.save()
 	default:
 		log.Printf("upload answered %d, will retry", code)
@@ -316,8 +486,17 @@ func (s *syncer) pass(roots []string) int {
 	for _, f := range files {
 		s.syncFile(f)
 	}
-	s.show(func(v *view) { v.Files = len(files) })
+	var candidates []string
+	if len(roots) == 0 { // looked for again on every pass while nothing is found (rootFinder), so this costs no more
+		candidates = append(append([]string{}, s.st.WowDirs...), platformRoots()...)
+	}
+	game := gameDetails(roots, candidates, s.st.WowDirs)
+	s.show(func(v *view) { v.Files, v.Game = len(files), game })
 	s.probe()
+	if detail := s.details(); detail != s.logged && s.st.debug() {
+		s.logged = detail // with the debug setting, the log holds what the window shows, for who is asked to send it
+		log.Printf("details:\n%s", detail)
+	}
 	return len(files)
 }
 
@@ -360,6 +539,12 @@ func describe(st *state) string {
 	files := findSavedFiles(roots(st))
 	if len(files) == 0 {
 		b.WriteString(text("nofile"))
+		found := roots(st)
+		var candidates []string
+		if len(found) == 0 {
+			candidates = append(append([]string{}, st.WowDirs...), platformRoots()...)
+		}
+		b.WriteString(gameDetails(found, candidates, st.WowDirs) + "\n")
 		return b.String()
 	}
 	for _, f := range files {
@@ -414,6 +599,10 @@ func main() {
 		saveState(statePath, st)
 		return
 	}
+	if *install && !st.autostart() {
+		st.NoAutostart = false // asked for by name: the setting follows
+		saveState(statePath, st)
+	}
 	if *install && installHandsOver {
 		// The session manager runs the program from now on; this process only installs it.
 		if err := installAutostart(); err != nil {
@@ -425,7 +614,7 @@ func main() {
 		fmt.Print(describe(st))
 		return
 	}
-	setupLog(filepath.Join(dir, "sync.log"))
+	logPath := setupLog(filepath.Join(dir, "sync.log"))
 
 	if !*once {
 		// One copy per user: settle makes this process that copy, or says that another one is.
@@ -438,7 +627,7 @@ func main() {
 
 	s := &syncer{url: st.uploadURL(), client: &http.Client{Timeout: 30 * time.Second}, st: st,
 		save: func() { saveState(statePath, st) }, tokens: map[string]*tokenStatus{}, now: time.Now,
-		shown: view{LastSync: st.LastSync, Files: -1}}
+		shown: view{LastSync: st.LastSync, Files: -1}, logPath: logPath}
 	log.Printf("rookieledger-sync %s, uploading to %s", version, s.url)
 	finder := &rootFinder{find: func() []string { return roots(st) }, now: time.Now}
 	if *once {
