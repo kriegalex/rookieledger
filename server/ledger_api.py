@@ -710,6 +710,10 @@ class Handler(BaseHTTPRequestHandler):
 
     do_POST = do_PUT = do_PATCH = do_DELETE = refuse
 
+    def log_request(self, code="-", size="-"):
+        if self.path != "/healthz":   # the probes of whatever runs the service, every few seconds
+            super().log_request(code, size)
+
     def log_message(self, format, *args):
         # One line per request, without the client's address.
         sys.stderr.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
