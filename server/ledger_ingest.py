@@ -196,6 +196,10 @@ class Handler(BaseHTTPRequestHandler):
             self.server.tokens.registered(digest)
         self.reply(200, {"id": origin, "rev": own["rev"], "stored": changed, "skipped": own.get("skipped", 0)})
 
+    def log_request(self, code="-", size="-"):
+        if self.path != "/healthz":   # the probes of whatever runs the service, every few seconds
+            super().log_request(code, size)
+
     def log_message(self, format, *args):
         # One line per request, without the Authorization header and without the client's address.
         sys.stderr.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
