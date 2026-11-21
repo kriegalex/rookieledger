@@ -63,3 +63,24 @@ func TestAutostartEntry(t *testing.T) {
 		t.Fatalf("removing what is not installed: %v", err)
 	}
 }
+
+func TestAutostartSetting(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setAutostart(true); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := regString(syscall.HKEY_CURRENT_USER, runKey, runValue); !ok || got != `"`+self+`" --background` {
+		t.Fatalf("switched on, the Run key holds %q, %v", got, ok)
+	}
+	for range 2 { // switched off, and switched off when it already is
+		if err := setAutostart(false); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := regString(syscall.HKEY_CURRENT_USER, runKey, runValue); ok {
+			t.Fatalf("switched off, the entry is still there")
+		}
+	}
+}

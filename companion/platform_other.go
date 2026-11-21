@@ -122,4 +122,5 @@ func french() bool {
 	return false
 }
 
-func setupLog(string) {}
+// setupLog leaves the log where it goes by itself, the journal of the systemd unit: there is no file to name.
+func setupLog(string) string { return "" }
