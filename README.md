@@ -157,6 +157,13 @@ docker exec <container> python3 -I server/ledger_admin.py list
 
 Both services answer `GET /healthz` without a token, with the version they run, and stop cleanly on SIGTERM.
 
+For who runs the site, the read API can also answer `GET /metrics` on a port of its own, in the Prometheus text
+format (`--metrics-port 9102` or `LEDGER_METRICS_PORT=9102`; off unless asked for): tokens by what their record is
+worth (`rookieledger_tokens{state="counted|probation|held|revoked"}`), tokens registered in the last day, records,
+the time of the last upload and the size of the database. An alert on `rookieledger_tokens{state="held"} > 0` tells
+when a record waits for `approve`, in place of reading `digest` every day. Nothing in it is about one player, but it
+is not for visitors either: keep that port away from the reverse proxy.
+
 A site running an older `server/` keeps accepting uploads from a newer addon: what it does not know of a record
 (quest items, before v0.4.0) is left out, not refused. Update `server/` to keep it.
 

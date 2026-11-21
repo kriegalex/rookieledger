@@ -1,6 +1,7 @@
 #!/bin/sh
 # Checks a built image the way it runs in production: read-only root filesystem, no capabilities, an arbitrary
-# user, one volume for the database. Both services must answer /healthz with the version the image was built as.
+# user, one volume for the database. Both services must answer /healthz with the version the image was built as,
+# and the read API its metrics on their own port.
 # Usage: server/image_test.sh <image> <version>
 set -eu
 image=$1 version=$2
@@ -14,7 +15,7 @@ run() {
 }
 ingest=$(run -p 127.0.0.1::8787 "$image" server/ledger_ingest.py)
 ids="$ingest"
-api=$(run -p 127.0.0.1::8788 "$image")
+api=$(run -p 127.0.0.1::8788 -p 127.0.0.1::9102 -e LEDGER_METRICS_PORT=9102 "$image")
 ids="$ids $api"
 for service in "$ingest 8787" "$api 8788"; do
     set -- $service
@@ -28,6 +29,10 @@ for service in "$ingest 8787" "$api 8788"; do
     echo "port $2: $answer"
     [ "$answer" = "{\"status\":\"ok\",\"version\":\"$version\"}" ]
 done
+# The keeper's numbers are on their own port, and not on the one the internet reaches.
+curl -fs "http://$(docker port "$api" 9102 | head -n 1)/metrics" | grep -q "^rookieledger_build_info{version=\"$version\"} 1$"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "http://$(docker port "$api" 8788 | head -n 1)/metrics")" = 404 ]
+echo "port 9102: metrics"
 # A stop is obeyed at once (SIGTERM), not after the runtime's wait and a kill.
 docker stop -t 5 $ids >/dev/null
 for id in $ids; do

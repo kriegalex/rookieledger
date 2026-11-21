@@ -32,6 +32,10 @@ What a client can rely on:
   Another answer is 401. Answers are then `Cache-Control: private`. A key names a program so that it can be
   counted, limited or shut out; one that a web page carries is readable by its visitors and protects nothing.
 - Within /v1 fields are added, never renamed or removed. A change that breaks a client gets a new prefix.
+
+With `--metrics-port` (or LEDGER_METRICS_PORT; off unless asked for) a second port answers `GET /metrics` in the
+Prometheus text format: how many tokens count, wait, are held or revoked, how many registered in the last day, the
+records and the time of the last upload. It is for who runs the site: keep that port away from the reverse proxy.
 """
 import argparse, base64, bisect, gzip, hashlib, json, os, re, sqlite3, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -599,6 +603,77 @@ class Store:
             return self.view
 
 
+def metrics(db_path, now=None):
+    """What the keeper of the site watches, as Prometheus text: nothing here is about one member."""
+    now = time.time() if now is None else now
+    lines = ["# HELP rookieledger_build_info The version of the service.", "# TYPE rookieledger_build_info gauge",
+             'rookieledger_build_info{version="%s"} 1' % lc.VERSION.replace("\\", "").replace('"', "")]
+
+    def gauge(name, text, values):
+        lines.extend(("# HELP %s %s" % (name, text), "# TYPE %s gauge" % name))
+        lines.extend("%s%s %d" % (name, labels, value) for labels, value in values)
+
+    con = _open(db_path)
+    try:
+        revoked, held, waiting, total, new = con.execute(
+            "SELECT COALESCE(SUM(revoked_at IS NOT NULL), 0), "
+            "COALESCE(SUM(revoked_at IS NULL AND held IS NOT NULL), 0), "
+            "COALESCE(SUM(revoked_at IS NULL AND held IS NULL AND label LIKE 'self-%' AND approved_at IS NULL "
+            "AND added_at > ?), 0), COUNT(*), COALESCE(SUM(label LIKE 'self-%' AND added_at >= ?), 0) "
+            "FROM ledger_tokens", (lc.probation_ends_before(now), lc.now_iso(now - 86400))).fetchone()
+        records, last = con.execute("SELECT COUNT(*), MAX(received_at) FROM ledger_records WHERE own = 1").fetchone()
+        counted = con.execute("SELECT COUNT(*) " + lc.COUNTED, (lc.probation_ends_before(now),)).fetchone()[0]
+    except (AttributeError, sqlite3.OperationalError):   # no database yet, or one no upload service has opened
+        return "\n".join(lines) + "\n"
+    finally:
+        if con:
+            con.close()
+    gauge("rookieledger_tokens", "Upload tokens by what their record is worth: counted, on probation (registered "
+          "itself less than 48 hours ago), held (made faster than play allows, until approved) or revoked.",
+          (('{state="counted"}', total - revoked - held - waiting), ('{state="probation"}', waiting),
+           ('{state="held"}', held), ('{state="revoked"}', revoked)))
+    gauge("rookieledger_tokens_registered_last_day", "Tokens that registered themselves in the last 24 hours.",
+          (("", new),))
+    gauge("rookieledger_records", "Records received, and those that count in what the API gives out.",
+          (('{counted="all"}', records), ('{counted="yes"}', counted)))
+    if last:
+        gauge("rookieledger_last_upload_timestamp_seconds", "When the last record was received.",
+              (("", lc._epoch(last)),))
+    gauge("rookieledger_database_bytes", "Size of the SQLite file.", (("", Path(db_path).stat().st_size),))
+    return "\n".join(lines) + "\n"
+
+
+class MetricsHandler(BaseHTTPRequestHandler):
+    server_version = "ledger"
+    sys_version = ""
+    timeout = 20
+
+    def do_GET(self):
+        found = self.path == "/metrics"
+        try:
+            body = metrics(self.server.db_path).encode() if found else b"only /metrics lives here\n"
+            status = 200 if found else 404
+        except Exception as error:
+            sys.stderr.write(("error on /metrics: %r" % (error,)).translate(lc.LOG_SAFE) + "\n")
+            body, status = b"the service failed to answer\n", 500
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass   # a scrape every few seconds says nothing
+
+
+class MetricsServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, db_path):
+        self.db_path = db_path
+        super().__init__(address, MetricsHandler)
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -728,10 +803,16 @@ def main():
     ap.add_argument("--prefix", default="/v1", help="path the API answers under (default /v1)")
     ap.add_argument("--auth", choices=AUTH_MODES, default=os.environ.get("LEDGER_API_AUTH") or "none",
                     help="none: answer everyone (default). key: ask for a key made with ledger_admin.py api-key add")
+    ap.add_argument("--metrics-port", type=int, default=int(os.environ.get("LEDGER_METRICS_PORT") or 0),
+                    help="also answer GET /metrics (Prometheus) on this port, for who runs the site; 0: no (default)")
     args = ap.parse_args()
     server = Server((args.host, args.port), args.db, args.prefix, args.auth)
     print(f"ledger api on {args.host}:{args.port}{server.prefix}, auth {args.auth}, database {args.db}",
           file=sys.stderr, flush=True)
+    if args.metrics_port:
+        watched = MetricsServer((args.host, args.metrics_port), args.db)
+        threading.Thread(target=watched.serve_forever, daemon=True).start()
+        print(f"metrics on {args.host}:{args.metrics_port}/metrics", file=sys.stderr, flush=True)
     lc.serve(server)
 
 
