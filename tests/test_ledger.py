@@ -127,6 +127,21 @@ RookieLedgerDB = {
 ''' % TOKEN
 
 
+# The log of groups, as the addon leaves it in the same file: three lines kept of twelve written.
+GROUP = '''
+RookieLedgerGroup = {
+["v"] = 1,
+["k"] = 1794800100,
+["n"] = 12,
+["l"] = {
+"1794800200.00 S build=71037 version=v0.8.0 locale=frFR", -- [1]
+"1794800200.00 G members=3 raid=0 method=3 threshold=2 instance=none map=1411", -- [2]
+"1794800260.52 W method=3 threshold=2 coin=104@c3100.9f3a61c2*104", -- [3]
+},
+}
+'''
+
+
 class Parser(unittest.TestCase):
     def test_reads_what_the_game_writes(self):
         saved = lc.parse_saved_variables('A = {\n["k"] = "a\\"b\\\\c\\n",\n[3] = -1.5,\n7, -- [1]\ntrue, -- [2]\n}\nB = nil\n')
@@ -184,6 +199,65 @@ class Checks(unittest.TestCase):
 
 
 QUEST_ITEMS = '["own"] = {\n["q"] = {\n["299:2858"] = {\n["q"] = 367,\n["j"] = 1,\n["n"] = 4,\n["k"] = 2,\n["t"] = 3,\n},\n},\n'
+
+
+class GroupLog(unittest.TestCase):
+    def lines(self, text):
+        return lc.group_lines(lc.parse_saved_variables(text))
+
+    def test_lines_are_numbered_from_the_first_ever_written(self):
+        begun, lines = self.lines(SAVED + GROUP)
+        self.assertEqual((begun, [seq for seq, _ in lines]), (1794800100, [10, 11, 12]))
+        self.assertEqual(lines[2][1], "1794800260.52 W method=3 threshold=2 coin=104@c3100.9f3a61c2*104")
+
+    def test_a_file_without_a_log_has_none(self):
+        self.assertIsNone(self.lines(SAVED))
+        self.assertEqual(self.lines(SAVED + 'RookieLedgerGroup = { ["v"] = 1, ["k"] = 5, ["n"] = 0, ["l"] = {} }'), (5, []))
+
+    def test_a_log_that_cannot_be_read_is_no_log(self):
+        for bad in ('"x"', '{ ["v"] = 2, ["k"] = 5, ["n"] = 0, ["l"] = {} }', '{ ["v"] = 1, ["k"] = 5, ["n"] = 0, ["l"] = 3 }',
+                    '{ ["v"] = 1, ["k"] = "x", ["n"] = 0, ["l"] = {} }', '{ ["v"] = 1, ["k"] = 5, ["n"] = -1, ["l"] = {} }'):
+            self.assertIsNone(self.lines(SAVED + "RookieLedgerGroup = " + bad), bad)
+        # More lines kept than were ever written: the count is not one to number lines by.
+        self.assertIsNone(self.lines(SAVED + GROUP.replace('["n"] = 12', '["n"] = 2')))
+
+    def test_a_line_that_is_not_one_is_left_out(self):
+        for bad in ('"no time"', '"1794800200.00 S caf\195\169"', '7', '"1794800200.00 S ' + "x" * lc.MAX_GROUP_LINE + '"',
+                    '"1794800200.00 s lower"', '{}'):
+            _, lines = self.lines(SAVED + GROUP.replace('"1794800200.00 G members=3 raid=0 method=3 threshold=2 '
+                                                        'instance=none map=1411"', bad))
+            self.assertEqual([seq for seq, _ in lines], [10, 12], bad)
+
+    def test_no_more_lines_than_the_addon_keeps(self):
+        many = "".join('"1794800200.00 R x %d", -- [%d]\n' % (i, i) for i in range(1, lc.MAX_GROUP_LINES + 51))
+        text = 'RookieLedgerGroup = {\n["v"] = 1,\n["k"] = 5,\n["n"] = 9000,\n["l"] = {\n%s},\n}\n' % many
+        _, lines = self.lines(text)
+        self.assertEqual((len(lines), lines[0][0], lines[-1]), (lc.MAX_GROUP_LINES, 9000 - lc.MAX_GROUP_LINES + 1,
+                                                               (9000, "1794800200.00 R x %d" % (lc.MAX_GROUP_LINES + 50))))
+
+    def test_kept_once_for_a_while_and_within_bounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            con = lc.connect(Path(tmp) / "ledger.sqlite")
+            log = self.lines(SAVED + GROUP)
+            now = 1795000000
+            self.assertEqual(lc.store_group_log(con, "0876cf1e", log, now), 3)
+            self.assertEqual(lc.store_group_log(con, "0876cf1e", log, now + 60), 0, "the same lines again")
+            self.assertEqual(lc.store_group_log(con, "aaaaaaaa", log, now + 60), 3, "another member's are their own")
+            self.assertEqual(lc.store_group_log(con, "0876cf1e", (log[0] + 1, log[1]), now + 60), 3, "and a log begun anew")
+            self.assertEqual([row[1:3] for row in lc.group_log(con, "0876cf1e")],
+                             [(1794800100, 10), (1794800100, 11), (1794800100, 12),
+                              (1794800101, 10), (1794800101, 11), (1794800101, 12)])
+            self.assertEqual(len(lc.group_log(con).fetchall()), 9)
+            self.assertEqual(lc.store_group_log(con, "0876cf1e", None, now), 0)
+            with mock.patch.object(lc, "MAX_GROUP_KEPT", 4):
+                lc.store_group_log(con, "0876cf1e", (log[0] + 2, log[1][:1]), now + 120)
+            self.assertEqual([row[1:3] for row in lc.group_log(con, "0876cf1e")],
+                             [(1794800101, 10), (1794800101, 11), (1794800101, 12), (1794800102, 10)],
+                             "of one member the oldest lines go first")
+            self.assertEqual(len(lc.group_log(con, "aaaaaaaa").fetchall()), 3)
+            lc.store_group_log(con, "bbbbbbbb", (1, []), now + 90 + lc.GROUP_LOG_DAYS * 86400)
+            self.assertEqual([row[1:3] for row in lc.group_log(con)], [(1794800102, 10)], "lines are kept for a while only")
+            con.close()
 
 
 class QuestItems(unittest.TestCase):
@@ -344,6 +418,39 @@ class Endpoint(unittest.TestCase):
         self.assertIn("monster loot (1 kinds of creature, 4 corpses)", out.getvalue())
         self.assertIn("creature 299, 4 corpses, 185 copper each, 2 different items", out.getvalue())
         self.assertIn("quest items (0 creature and item pairs)", out.getvalue())
+        con.close()
+
+    def test_the_log_of_groups_is_kept_beside_the_record(self):
+        self.register()
+        status, body = self.call("upload", body=(SAVED + GROUP).encode())
+        self.assertEqual((status, json.loads(body)), (200, {"id": "0876cf1e", "rev": 7, "stored": 1, "skipped": 0}))
+        self.call("upload", body=(SAVED + GROUP).encode())
+        con = lc.connect(self.db)
+        self.assertEqual([row[:3] for row in lc.group_log(con)], [("0876cf1e", 1794800100, seq) for seq in (10, 11, 12)])
+        self.assertNotIn("group", con.execute("SELECT body FROM ledger_records").fetchone()[0])
+        con.close()
+        with mock.patch.object(sys, "argv", ["ledger_admin.py", "--db", str(self.db), "group-log", "0876cf1e"]), \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            ledger_admin.main()
+        self.assertEqual(out.getvalue().splitlines()[0],
+                         "0876cf1e\t1794800100\t10\t1794800200.00 S build=71037 version=v0.8.0 locale=frFR")
+
+    def test_a_log_of_groups_that_cannot_be_read_costs_no_upload(self):
+        self.register()
+        status, body = self.call("upload", body=(SAVED + 'RookieLedgerGroup = { ["v"] = 1, ["l"] = "x" }').encode())
+        self.assertEqual((status, json.loads(body)["stored"]), (200, 1))
+        con = lc.connect(self.db)
+        self.assertEqual(lc.group_log(con).fetchall(), [])
+        con.close()
+
+    def test_what_is_refused_leaves_no_log(self):
+        self.register()
+        self.register(OTHER, "B")
+        self.call("upload", body=SAVED.encode())
+        status, _ = self.call("upload", token=OTHER, body=(SAVED.replace(TOKEN, OTHER) + GROUP).encode())
+        self.assertEqual(status, 409)
+        con = lc.connect(self.db)
+        self.assertEqual(lc.group_log(con).fetchall(), [])
         con.close()
 
     def test_a_revoked_token_no_longer_counts(self):
@@ -708,6 +815,13 @@ class Addon(unittest.TestCase):
                                                "p": {"1429:500:500": 4}})
             self.assertEqual((own["m"]["118"]["n"], own["m"]["118"]["cn"], own["m"]["118"]["c"]), (3, 1, 50))
             self.assertEqual(own["q"], {"5000:2858": {"q": 367, "j": 2, "n": 3, "k": 1, "t": 2}})
+            # The log of groups the addon wrote is one the server reads whole, and it is not in the record.
+            saved = lc.parse_saved_variables(out.read_text())
+            begun, lines = lc.group_lines(saved)
+            written = saved["RookieLedgerGroup"]
+            self.assertEqual((len(lines), lines[-1][0]), (len(written["l"]), written["n"]))
+            self.assertGreater(len(lines), 3000)
+            self.assertNotIn("RookieLedgerGroup", json.dumps(own))
 
 
 if __name__ == "__main__":

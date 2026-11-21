@@ -48,6 +48,10 @@ MAX_VALUES = 250_000        # per file, past which it is refused: six times what
 # A token that registered itself (open registration) is not taken at its word. Its record counts in what the site
 # gives out only PROBATION after it registered, and not at all while `doubt` finds it made faster than play allows.
 # The numbers are wide on purpose: they are to be narrowed once real records show what play looks like.
+MAX_GROUP_LINES = 4000      # of the log of groups, per upload: what Group.lua keeps
+MAX_GROUP_LINE = 1000       # characters of one of its lines, where Group.lua cuts
+MAX_GROUP_KEPT = 100_000    # lines kept of one record id; the oldest go first
+GROUP_LOG_DAYS = 90         # a line is kept this long after the site received it
 PROBATION = 48 * 3600       # seconds before the record of a token that registered itself counts
 PACE = 1200                 # things recorded (corpses, gathers, crafts, disenchants) per hour of play
 BURST = 200                 # and this many on top, whatever the time
@@ -347,6 +351,30 @@ def check_db(saved):
     return origin, check_record(db.get("own"))
 
 
+_GROUP_LINE = re.compile(r"\d{9,10}\.\d\d [A-Z]( [ -~]*)?")   # "<time> <letter> <fields>", as Group.lua writes it
+
+
+def group_lines(saved):
+    """(when the log was begun, [(number of the line, line)]) for the log of groups in a parsed saved-variables file
+    (RookieLedgerGroup, see Group.lua), or None when the file has none that can be read. The log is for study and
+    is kept apart from the records: whatever is wrong with it costs the log, or the line, never the upload. A line
+    is numbered from the first one the log ever held, so that a line uploaded twice is the same line."""
+    log = saved.get("RookieLedgerGroup")
+    if not isinstance(log, dict) or log.get("v") != 1 or not isinstance(log.get("l"), dict):
+        return None
+    lines = log["l"]
+    try:
+        begun, written = _int(log.get("k"), 0, 2**32 - 1), _int(log.get("n"), len(lines), MAX_REV)
+    except LedgerError:
+        return None
+    kept = []
+    for i in range(max(1, len(lines) - MAX_GROUP_LINES + 1), len(lines) + 1):
+        line = lines.get(i)
+        if isinstance(line, str) and len(line) <= MAX_GROUP_LINE and _GROUP_LINE.fullmatch(line):
+            kept.append((written - len(lines) + i, line))
+    return begun, kept
+
+
 def file_token(text):
     """The upload token the addon stored in a saved-variables file, or None."""
     m = re.search(r'\["token"\] = "([0-9a-f]{32})"', text)
@@ -387,6 +415,15 @@ def connect(path=DB_PATH):
             received_at TEXT NOT NULL,
             body TEXT NOT NULL,            -- the checked record as JSON
             PRIMARY KEY (origin, uploader)
+        );
+        CREATE TABLE IF NOT EXISTS group_log (
+            origin TEXT NOT NULL,          -- the record id of who wrote the line: what members saw of loot in a
+                                           -- group, kept for study. Nothing the site serves is made from it
+            begun INTEGER NOT NULL,        -- when that member's log was begun (epoch seconds)
+            seq INTEGER NOT NULL,          -- the line's number in that log
+            received_at TEXT NOT NULL,
+            line TEXT NOT NULL,
+            PRIMARY KEY (origin, begun, seq)
         );
         CREATE TABLE IF NOT EXISTS api_keys (
             key_hash TEXT PRIMARY KEY,     -- SHA-256 of the key: the key itself is shown once and never stored
@@ -532,6 +569,32 @@ def store_upload(con, uploader, origin, own, now=None):
     con.execute("UPDATE ledger_tokens SET last_upload = ?, origin = ? WHERE token_hash = ?", (stamp, origin, uploader))
     con.commit()
     return changed
+
+
+def store_group_log(con, origin, log, now=None):
+    """Keeps the lines of a log of groups (what group_lines gave) that the site does not hold yet, under the record
+    id of who uploaded them. Returns how many were new. Lines received more than GROUP_LOG_DAYS ago go, and of one
+    record id all but the last MAX_GROUP_KEPT."""
+    if not log:
+        return 0
+    begun, lines = log
+    now = time.time() if now is None else now
+    before = con.total_changes
+    con.executemany("INSERT OR IGNORE INTO group_log VALUES (?, ?, ?, ?, ?)",
+                    [(origin, begun, seq, now_iso(now), line) for seq, line in lines])
+    added = con.total_changes - before
+    con.execute("DELETE FROM group_log WHERE received_at < ?", (now_iso(now - GROUP_LOG_DAYS * 86400),))
+    con.execute("DELETE FROM group_log WHERE origin = ? AND rowid IN (SELECT rowid FROM group_log WHERE origin = ? "
+                "ORDER BY received_at DESC, begun DESC, seq DESC LIMIT -1 OFFSET ?)", (origin, origin, MAX_GROUP_KEPT))
+    con.commit()
+    return added
+
+
+def group_log(con, origin=None):
+    """The lines kept of the logs of groups, as (record id, when the log was begun, number, line), each log in the
+    order it was written; of one record id when it is named."""
+    return con.execute("SELECT origin, begun, seq, line FROM group_log WHERE ? IS NULL OR origin = ? "
+                       "ORDER BY origin, begun, seq", (origin, origin))
 
 
 def purge_relayed(con):
