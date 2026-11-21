@@ -1,8 +1,7 @@
 package main
 
 var texts = map[string][2]string{ // English, French
-	"nofile": {"No RookieLedger data found yet: install the addon, log in once and log out.\nIf WoW is in an unusual folder, start this program once with --wow-dir \"<World of Warcraft folder>\".\n",
-		"Aucune donnée RookieLedger trouvée : installer l'add-on, se connecter une fois puis se déconnecter.\nSi WoW est dans un dossier inhabituel, lancer une fois ce programme avec --wow-dir \"<dossier World of Warcraft>\".\n"},
+	"nofile":          {"No RookieLedger data found yet: install the addon, log in once and log out.\n", "Aucune donnée RookieLedger trouvée : installer l'add-on, se connecter une fois puis se déconnecter.\n"},
 	"found":           {"Account %s, token: %s\n", "Compte %s, jeton : %s\n"},
 	"refused":         {"  the site refused its last file: %s\n", "  le site a refusé son dernier fichier : %s\n"},
 	"give":            {"Uploads start by themselves on a site open to all. If a site asks for the token, give it to that site's keeper.\n", "L'envoi commence tout seul sur un site ouvert à tous. Si un site demande le jeton, le donner au responsable de ce site.\n"},
@@ -38,10 +37,16 @@ var texts = map[string][2]string{ // English, French
 	"dnoaddon":        {" The RookieLedger addon is not in its Interface\\AddOns folder.", " L'add-on RookieLedger n'est pas dans son dossier Interface\\AddOns."},
 	"dnologin":        {" The addon is installed: log in to the game once and log out.", " L'add-on est installé : se connecter une fois au jeu puis se déconnecter."},
 	"dnologout":       {" The addon is installed but has saved nothing yet: enable it in the game's AddOns list, then log out.", " L'add-on est installé mais n'a encore rien enregistré : l'activer dans la liste des add-ons du jeu, puis se déconnecter."},
-	"dnofolder":       {"Game: no World of Warcraft folder with a _forever_ folder was found. If it is in an unusual place, start this program once with --wow-dir \"<World of Warcraft folder>\".", "Jeu : aucun dossier World of Warcraft contenant un dossier _forever_ n'a été trouvé. S'il est à un endroit inhabituel, lancer une fois ce programme avec --wow-dir \"<dossier World of Warcraft>\"."},
+	"dnofolder":       {"Game: no World of Warcraft folder with a _forever_ folder was found. If it is in an unusual place, point to it: with the window's \"Choose the game folder\" button on Windows, by starting this program once with --wow-dir \"<World of Warcraft folder>\" elsewhere.", "Jeu : aucun dossier World of Warcraft contenant un dossier _forever_ n'a été trouvé. S'il est à un endroit inhabituel, l'indiquer : avec le bouton « Choisir le dossier du jeu » de la fenêtre sous Windows, en lançant une fois ce programme avec --wow-dir \"<dossier World of Warcraft>\" ailleurs."},
+	"checkevery":      {"Check for new data", "Vérifier les données"},
+	"everyminute":     {"every minute", "toutes les minutes"},
+	"everyminutes":    {"every %d minutes", "toutes les %d minutes"},
+	"choose":          {"Choose the game folder…", "Choisir le dossier du jeu…"},
+	"choosetitle":     {"Select your World of Warcraft folder", "Sélectionnez votre dossier World of Warcraft"},
+	"notforever":      {"No WoW Forever was found in\n%s\n\nThe folder to choose is the World of Warcraft folder that holds a _forever_ folder.", "Aucun WoW Forever n'a été trouvé dans\n%s\n\nLe dossier à choisir est le dossier World of Warcraft qui contient un dossier _forever_."},
 	"dotherflavor":    {"%s holds %s, but not _forever_: WoW Forever is not installed there.", "%s contient %s, mais pas _forever_ : WoW Forever n'y est pas installé."},
 	"dnotwow":         {"%s exists, but holds no game.", "%s existe, mais ne contient aucun jeu."},
-	"dnogiven":        {"The folder given with --wow-dir does not exist: %s", "Le dossier donné avec --wow-dir n'existe pas : %s"},
+	"dnogiven":        {"The game folder that was given (--wow-dir, or the window's button) does not exist: %s", "Le dossier du jeu qui a été indiqué (--wow-dir, ou le bouton de la fenêtre) n'existe pas : %s"},
 	"noautostart":     {"RookieLedger Sync runs now, but could not be set to start with the session: ", "RookieLedger Sync fonctionne, mais le démarrage automatique n'a pas pu être installé : "},
 }
 

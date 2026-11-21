@@ -115,6 +115,15 @@ that file and uploads it.
    answers, when your data was last synced and whether the addon's data was found. Closing it leaves the app
    running behind its icon in the notification area: a click on the icon shows the window again, a right-click
    offers to show or hide it, or to quit. To update, download the new version and double-click it.
+   The app finds the game by itself: it takes the place Battle.net recorded, then looks for a `World of Warcraft`
+   folder up to two folders down every disk of the computer and your own folder (`C:\Program Files (x86)\World of
+   Warcraft`, `F:\Battlenet\World of Warcraft`). It stays out of Windows' own folders, of hidden folders, of
+   network drives and of the folders of OneDrive and other cloud services. When the game is somewhere else, the
+   window's *Choose the game folder…* button opens Windows' folder dialog: pick the `World of Warcraft` folder, a
+   folder inside it or the one it is in, and the app looks there at once and remembers it.
+   The app looks at the game's saved files every minute; the window's drop-down list changes that to every 5 or
+   10 minutes. The game only writes those files when you log out or reload. While the site does not answer, the
+   app tries again every minute, whatever was chosen.
    The right-click menu also holds two settings. *Start with Windows* is ticked at first: untick it and the app
    runs only when you start it. *Show details (debug)* makes the window say why something does not work: why the
    site was not reached (no connection, a name not found, a firewall or antivirus in between, the site down), and
@@ -136,7 +145,7 @@ block unsigned programs with no bypass.
 | `--status` | Shows the saved files found, their tokens and why the site refused a file, or what was found of the game when there is none, then exits |
 | `--once` | One pass, then exits |
 | `--install` / `--uninstall` | Adds or removes the start with your session (Windows: `--uninstall` also stops and removes the installed copy) |
-| `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself (remembered) |
+| `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself (remembered); on Windows the window's button does the same |
 | `--url URL` | Another site's upload address (remembered; `--url default` goes back) |
 | `--background` | Windows: starts without opening the window, as the start with your session does |
 
@@ -148,8 +157,8 @@ block unsigned programs with no bypass.
   (`WTF/Account/<account>/SavedVariables/RookieLedger.lua`) when its content has changed, with the token. That file
   holds the record described above, gathering places included, and the log of groups. The per-character file of the same name, one folder
   deeper, is not read.
-- On Windows it also asks the site every 10 minutes whether it is up, without the token, when nothing else was
-  sent in that time: the window shows the answer.
+- On Windows it also asks the site whether it is up, without the token, when it looks at the saved files and
+  nothing else was sent for 10 minutes: the window shows the answer.
 - It reads no other file, sends no telemetry and does not update itself.
 
 The token is the only credential: it is what ties your record to you. Give it to nobody, except to the ledger

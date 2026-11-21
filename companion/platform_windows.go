@@ -73,8 +73,38 @@ func regString(root syscall.Handle, path, name string) (string, bool) {
 	return syscall.UTF16ToString(buf), true
 }
 
-// platformRoots lists where a "World of Warcraft" folder usually is: the path Battle.net recorded, then common folders
-// on every drive.
+// searchDepth is how many folders below a drive, or below the person's own folder, an install is looked for:
+// D:\Games\Blizzard\World of Warcraft is two down.
+const searchDepth = 2
+
+// localDrive tells whether a drive letter is a disk of this computer, built in or plugged in. A network drive is
+// left alone: one that is not connected holds up every question asked of it.
+func localDrive(root string) bool {
+	p, err := syscall.UTF16PtrFromString(root)
+	if err != nil {
+		return false
+	}
+	kind, _, _ := kernel32.NewProc("GetDriveTypeW").Call(uintptr(unsafe.Pointer(p)))
+	return kind == 2 || kind == 3 // DRIVE_REMOVABLE, DRIVE_FIXED
+}
+
+// keptOut tells, from a folder's attributes, that the search for an install stays out of it: a hidden or system
+// folder (ProgramData, AppData, the recycle bin, whatever Windows keeps for itself), a link or mount point, and a
+// folder of a cloud service whose content is not all on the disk (OneDrive, under any name and wherever it was
+// moved): listing one of those can make the service fetch it. The attributes come with the listing of the folder
+// above: no folder is opened to learn them.
+func keptOut(entry os.DirEntry) bool {
+	info, err := entry.Info()
+	if err != nil {
+		return true
+	}
+	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	const hidden, system, reparse, offline, recallOnOpen, recallOnData = 0x2, 0x4, 0x400, 0x1000, 0x40000, 0x400000
+	return !ok || data.FileAttributes&(hidden|system|reparse|offline|recallOnOpen|recallOnData) != 0
+}
+
+// platformRoots lists where a "World of Warcraft" folder is: the path Battle.net recorded, then every folder of
+// that name up to searchDepth folders down each local drive and the person's own folder.
 func platformRoots() []string {
 	var out []string
 	for _, key := range []string{`SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft`,
@@ -88,11 +118,13 @@ func platformRoots() []string {
 		}
 	}
 	for drive := 'C'; drive <= 'Z'; drive++ {
-		for _, sub := range []string{`World of Warcraft`, `Program Files (x86)\World of Warcraft`,
-			`Program Files\World of Warcraft`, `Games\World of Warcraft`, `Battle.net\World of Warcraft`,
-			`Blizzard\World of Warcraft`, `Jeux\World of Warcraft`} {
-			out = append(out, string(drive)+`:\`+sub)
+		if root := string(drive) + `:\`; localDrive(root) {
+			out = append(out, installsBelow(root, searchDepth)...)
 		}
+	}
+	// The person's own folder too, unless it is kept on a server: that is a network drive under another name.
+	if home, err := os.UserHomeDir(); err == nil && localDrive(filepath.VolumeName(home)+`\`) {
+		out = append(out, installsBelow(home, searchDepth)...)
 	}
 	return out
 }

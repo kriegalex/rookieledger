@@ -8,7 +8,8 @@
 //	rookieledger-sync --uninstall remove the autostart
 //	rookieledger-sync --status    print the files found and their tokens, then exit
 //	rookieledger-sync --once      one pass, then exit
-//	  --wow-dir DIR   the "World of Warcraft" folder, when it is not found by itself (remembered)
+//	  --wow-dir DIR   the "World of Warcraft" folder, when it is not found by itself (remembered; on Windows the
+//	                  window's button asks for it)
 //	  --url URL       the upload address (remembered; "default" goes back to the RookieLedger site)
 //	  --background    Windows: start without opening the window (how the session starts it)
 //
@@ -36,6 +37,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,10 +45,11 @@ const (
 	defaultURL      = "https://rookieledger-api.21crypto.ch/v1/ledger"
 	flavor          = "_forever_"
 	savedFile       = "RookieLedger.lua"
-	pollEvery       = 60 * time.Second
+	pollEvery       = time.Minute      // how often the saved files are looked at unless the person chose otherwise
+	retryEvery      = time.Minute      // how soon the next pass comes while the site does not answer
 	recheckEvery    = 30 * time.Minute // how often an unregistered token asks again
-	rediscoverEvery = 30 * time.Minute // how often the disks are searched again for a WoW folder once one is known
-	probeEvery      = 10 * time.Minute // how often the window asks whether the site is up, when nothing else was sent
+	rediscoverEvery = 30 * time.Minute // how often the disks are searched again for a WoW folder, found or not
+	probeEvery      = 10 * time.Minute // the least wait before the window asks whether the site is up, nothing else sent
 	settleFor       = 5 * time.Second  // a file changed this recently may still be being written
 	maxFileBytes    = 8 << 20
 	maxLogBytes     = 1 << 20
@@ -73,7 +76,57 @@ type state struct {
 	NoAutostart bool `json:"no_autostart,omitempty"` // do not start with the session
 	Debug       bool `json:"debug,omitempty"`        // the window also says why something is wrong
 
+	// Where the game was last found by a search. A disk that is not ready when the session starts (plugged in, or
+	// unlocked, a moment later) makes that first search find nothing: these folders are then looked at again on
+	// every pass, which costs nothing, where a new search is half an hour away.
+	KnownDirs []string `json:"known_dirs,omitempty"`
+	// How often the saved files are looked at, in minutes: one of pollChoices, chosen in the Windows window. Zero, or
+	// anything else, is the default.
+	PollMinutes int `json:"poll_minutes,omitempty"`
+
 	mu sync.Mutex // the window changes the settings while the watching loop notes what it uploaded
+}
+
+// knownDirs is where the game was pointed to or last found: the places worth a look without a search.
+func (st *state) knownDirs() []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return append(append([]string{}, st.WowDirs...), st.KnownDirs...)
+}
+
+// remember notes where a search found the game, and tells whether that is news. A search that found nothing
+// changes nothing: the disk may only be away.
+func (st *state) remember(found []string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(found) == 0 || strings.Join(found, "\n") == strings.Join(st.KnownDirs, "\n") {
+		return false
+	}
+	st.KnownDirs = append([]string{}, found...)
+	return true
+}
+
+// pollChoices are the waits between two looks at the saved files that the window offers, in minutes.
+var pollChoices = []int{1, 5, 10}
+
+// pollMinutes is the wait chosen, the default when none was.
+func (st *state) pollMinutes() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, choice := range pollChoices {
+		if st.PollMinutes == choice {
+			return choice
+		}
+	}
+	return int(pollEvery / time.Minute)
+}
+
+// pollLabel says a wait as the window lists it: "every minute", "every 5 minutes".
+func pollLabel(minutes int) string {
+	if minutes == 1 {
+		return text("everyminute")
+	}
+	return fmt.Sprintf(text("everyminutes"), minutes)
 }
 
 // change makes a change to the state that the window or the watching loop may be reading.
@@ -81,6 +134,13 @@ func (st *state) change(f func()) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	f()
+}
+
+// wowDirs is the folder the person pointed to as their "World of Warcraft" folder, if they did.
+func (st *state) wowDirs() []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return append([]string{}, st.WowDirs...)
 }
 
 func (st *state) autostart() bool {
@@ -139,7 +199,11 @@ type syncer struct {
 	logPath    string        // where the log is written, for the window to say; empty when there is none
 	probeEvery time.Duration // how often to ask whether the site is up when nothing else was sent; 0: never
 	changed    func()        // told when the view changes; may be nil
+	wake       chan struct{} // asks the watching loop to look again now; may be nil
+	search     atomic.Bool   // and to search the disks for the game first
 	logged     string        // the details last written to the log
+	candidates []string      // where the game could be, as last searched for while it is not found
+	searched   time.Time     // when that was; zero: to be searched for again
 	mu         sync.Mutex    // guards shown
 	shown      view
 }
@@ -159,6 +223,29 @@ func (s *syncer) show(change func(*view)) {
 	if !same && s.changed != nil {
 		s.changed()
 	}
+}
+
+// look asks the watching loop for a pass now: the person changed how often it looks, or (search) pointed to the
+// game's folder, and the disks are then searched anew first.
+func (s *syncer) look(search bool) {
+	if search {
+		s.search.Store(true)
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default: // already asked, or nobody watches
+	}
+}
+
+// wait is how long the watching loop sleeps before its next pass: what the person chose, and no longer than
+// retryEvery while the site does not answer. A program started with the session often runs before the network is
+// up: what it could not send then is not left for ten minutes.
+func (s *syncer) wait() time.Duration {
+	wait := time.Duration(s.st.pollMinutes()) * time.Minute
+	if s.view().Problem != "" && wait > retryEvery {
+		wait = retryEvery
+	}
+	return wait
 }
 
 func configDir() string {
@@ -210,6 +297,68 @@ func findSavedFiles(roots []string) []string {
 	return out
 }
 
+const wowFolder = "World of Warcraft"
+
+// skipFolder tells the folders that are not looked into for an install, by their names: those of Windows itself,
+// those that hold programs' own data, the folders a cloud service keeps in step with its servers (listing one can
+// make it fetch what is not on the disk), hidden ones, and an install itself. On Windows, keptOut adds what a
+// folder's attributes say, whatever its name.
+func skipFolder(name string) bool {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "windows", "windows.old", "system volume information", "recovery", "perflogs", "programdata", "appdata",
+		"msocache", "config.msi", "documents and settings", "dropbox", "google drive", "iclouddrive",
+		strings.ToLower(wowFolder):
+		return true
+	}
+	// "OneDrive", and "OneDrive - Some Company" for a work account.
+	return strings.HasPrefix(lower, "onedrive") || strings.HasPrefix(name, "$") || strings.HasPrefix(name, ".")
+}
+
+// installsBelow lists the "World of Warcraft" folders that sit in top or up to depth folders further down: the
+// game is wherever its player put it (F:\Battlenet\World of Warcraft), which no list of usual names covers. Links
+// to other folders are not followed.
+func installsBelow(top string, depth int) []string {
+	var out []string
+	wow := filepath.Join(top, wowFolder)
+	if info, err := os.Stat(wow); err == nil && info.IsDir() {
+		out = append(out, wow)
+	}
+	if depth <= 0 {
+		return out
+	}
+	entries, _ := os.ReadDir(top)
+	for _, entry := range entries {
+		if entry.IsDir() && !skipFolder(entry.Name()) && !keptOut(entry) {
+			out = append(out, installsBelow(filepath.Join(top, entry.Name()), depth-1)...)
+		}
+	}
+	return out
+}
+
+// installFrom is the "World of Warcraft" folder meant by who picked a folder in a dialog: the folder itself, one
+// it is inside of (they went into _forever_, or down to an account), or one just below it (they stopped at the
+// folder WoW is in). False when no WoW Forever is around it.
+func installFrom(picked string) (string, bool) {
+	dir := filepath.Clean(picked)
+	for range 6 { // an account's SavedVariables is five folders down an install
+		if holdsForever(dir) {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	for _, wow := range installsBelow(picked, 2) {
+		if holdsForever(wow) {
+			return wow, true
+		}
+	}
+	return "", false
+}
+
 func holdsForever(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, flavor))
 	return err == nil && info.IsDir()
@@ -217,17 +366,33 @@ func holdsForever(dir string) bool {
 
 // expandRoots turns candidates into existing folders that hold a WoW Forever install. A candidate is first taken
 // as the folder it names (the one given with --wow-dir, the one in the registry), then as a pattern.
+//
+// An install is listed once, however many candidates lead to it: the folder the person pointed to, the one in the
+// registry and the one found on the disk are often the same.
 func expandRoots(candidates []string) []string {
 	var out []string
+	var seen []os.FileInfo
+	add := func(dir string) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return
+		}
+		for _, have := range seen {
+			if os.SameFile(have, info) {
+				return
+			}
+		}
+		seen, out = append(seen, info), append(out, dir)
+	}
 	for _, c := range candidates {
 		if holdsForever(c) {
-			out = append(out, c)
+			add(c)
 			continue
 		}
 		matches, _ := filepath.Glob(c)
 		for _, m := range matches {
 			if holdsForever(m) {
-				out = append(out, m)
+				add(m)
 			}
 		}
 	}
@@ -266,7 +431,7 @@ func otherFlavors(dir string) string {
 // gameDetails says what was found of the game, a line per thing, for who wonders why no data is found: each
 // install with its accounts and whether the addon is there, or, when no install was found, the folders among the
 // candidates (the places looked in, as names or patterns) that exist without holding WoW Forever, and a folder
-// given with --wow-dir that does not exist.
+// given with --wow-dir or the window's button that does not exist.
 func gameDetails(found, candidates, given []string) string {
 	var lines []string
 	for _, root := range found {
@@ -336,8 +501,8 @@ func explain(err error) string {
 	return text(why) + " (" + raw + ")"
 }
 
-// details is what the window shows below its three lines when the debug setting is on: where it uploads to and
-// why that failed, whether a token waits, what was found of the game, and where the log is.
+// details is what the window shows below its card and its button when the debug setting is on: where it uploads
+// to and why that failed, whether a token waits, what was found of the game, and where the log is.
 func (s *syncer) details() string {
 	v := s.view()
 	lines := []string{text("daddress") + s.url}
@@ -487,10 +652,14 @@ func (s *syncer) pass(roots []string) int {
 		s.syncFile(f)
 	}
 	var candidates []string
-	if len(roots) == 0 { // looked for again on every pass while nothing is found (rootFinder), so this costs no more
-		candidates = append(append([]string{}, s.st.WowDirs...), platformRoots()...)
+	if len(roots) == 0 {
+		// The places that could hold the game are searched for as rarely as the game itself (rootFinder).
+		if s.searched.IsZero() || s.now().Sub(s.searched) >= rediscoverEvery {
+			s.candidates, s.searched = append(s.st.wowDirs(), platformRoots()...), s.now()
+		}
+		candidates = s.candidates
 	}
-	game := gameDetails(roots, candidates, s.st.WowDirs)
+	game := gameDetails(roots, candidates, s.st.wowDirs())
 	s.show(func(v *view) { v.Files, v.Game = len(files), game })
 	s.probe()
 	if detail := s.details(); detail != s.logged && s.st.debug() {
@@ -513,22 +682,32 @@ func (s *syncer) probe() {
 }
 
 func roots(st *state) []string {
-	return expandRoots(append(append([]string{}, st.WowDirs...), platformRoots()...))
+	return expandRoots(append(st.wowDirs(), platformRoots()...))
 }
 
-// rootFinder remembers where WoW was found. Looking for it costs two registry queries and a look at every drive on
-// Windows, a walk three folders deep under /mnt and /media on Linux: not something to repeat every minute for weeks.
-// While nothing is found it looks on every pass, so a game installed later is still picked up.
+// rootFinder remembers where WoW was found, or that it was not. Looking for it costs two registry queries and a
+// walk two folders deep on every drive on Windows, three folders deep under /mnt and /media on Linux: not
+// something to repeat at every pass for weeks, least of all on a computer without the game. It is looked for when
+// the program starts, when the person points to a folder, and every rediscoverEvery: a game installed later is
+// picked up by then.
 type rootFinder struct {
 	find   func() []string
+	quick  func() []string // the folders where the game was before, of those that hold it now; may be nil
 	now    func() time.Time
 	dirs   []string
-	looked time.Time
+	looked time.Time // zero: not looked for yet, or to be looked for again
 }
 
+// forget makes the next look a search: where WoW is has just changed.
+func (r *rootFinder) forget() { r.looked = time.Time{} }
+
 func (r *rootFinder) roots() []string {
-	if len(r.dirs) == 0 || r.now().Sub(r.looked) >= rediscoverEvery {
+	if r.looked.IsZero() || r.now().Sub(r.looked) >= rediscoverEvery {
 		r.dirs, r.looked = r.find(), r.now()
+	} else if len(r.dirs) == 0 && r.quick != nil {
+		// Nothing found and no search due: the game may be on a disk that was not there yet when the session
+		// started. Where it was before is looked at again, which is a few folders and no search.
+		r.dirs = r.quick()
 	}
 	return r.dirs
 }
@@ -536,15 +715,15 @@ func (r *rootFinder) roots() []string {
 // describe lists what was found, for --status and the Windows message box.
 func describe(st *state) string {
 	var b strings.Builder
-	files := findSavedFiles(roots(st))
+	found := roots(st) // once: on Windows it is a search of every disk
+	files := findSavedFiles(found)
 	if len(files) == 0 {
 		b.WriteString(text("nofile"))
-		found := roots(st)
 		var candidates []string
 		if len(found) == 0 {
-			candidates = append(append([]string{}, st.WowDirs...), platformRoots()...)
+			candidates = append(st.wowDirs(), platformRoots()...)
 		}
-		b.WriteString(gameDetails(found, candidates, st.WowDirs) + "\n")
+		b.WriteString(gameDetails(found, candidates, st.wowDirs()) + "\n")
 		return b.String()
 	}
 	for _, f := range files {
@@ -627,9 +806,17 @@ func main() {
 
 	s := &syncer{url: st.uploadURL(), client: &http.Client{Timeout: 30 * time.Second}, st: st,
 		save: func() { saveState(statePath, st) }, tokens: map[string]*tokenStatus{}, now: time.Now,
-		shown: view{LastSync: st.LastSync, Files: -1}, logPath: logPath}
+		shown: view{LastSync: st.LastSync, Files: -1}, logPath: logPath, wake: make(chan struct{}, 1)}
 	log.Printf("rookieledger-sync %s, uploading to %s", version, s.url)
-	finder := &rootFinder{find: func() []string { return roots(st) }, now: time.Now}
+	finder := &rootFinder{now: time.Now,
+		find: func() []string {
+			found := roots(st)
+			if st.remember(found) {
+				saveState(statePath, st)
+			}
+			return found
+		},
+		quick: func() []string { return expandRoots(st.knownDirs()) }}
 	if *once {
 		log.Printf("%d saved file(s) found", s.pass(finder.roots()))
 		return
@@ -643,7 +830,14 @@ func main() {
 				log.Printf("%d saved file(s) found", n)
 				found = n
 			}
-			time.Sleep(pollEvery)
+			select {
+			case <-time.After(s.wait()):
+			case <-s.wake:
+				if s.search.Swap(false) {
+					finder.forget()
+					s.searched = time.Time{}
+				}
+			}
 		}
 	})
 }

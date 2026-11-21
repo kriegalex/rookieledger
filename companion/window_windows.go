@@ -6,6 +6,7 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"math"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -13,9 +14,12 @@ import (
 
 // The program shows an icon in the notification area and a small window: whether the site answers, when a file was
 // last accepted, and whether the addon's data was found. The window opens when a person starts the program and
-// stays closed when the session does (--background); its close button hides it, and the icon's menu shows it again
-// or quits. That menu also holds the two settings: whether the program starts with the session, and whether the
-// window says more (the debug setting: below its three lines, why the site or the game's data is not found).
+// stays closed when the session does (--background). A drop-down list in it sets how often the saved files are
+// looked at, and a button in it asks for the game's folder, with Windows' own folder dialog, for when the program
+// does not find it by itself. Its close button hides it, and the icon's menu shows it again or quits. That menu
+// also asks for the game's folder and holds the two settings: whether the program starts with the session, and
+// whether the window says more (the debug setting: below the card and the button, why the site or the game's data
+// is not found).
 //
 // The window is drawn by hand, in the manner of Windows 11: the system's font, a rounded card on the settings
 // pages' grey, light or dark as the person chose for apps, and at the scale of the screen it is on. Shapes go
@@ -32,6 +36,7 @@ var icons embed.FS
 var iconSizes = []int32{16, 20, 24, 28, 32, 40, 48, 56, 64, 256}
 
 var (
+	ole32   = syscall.NewLazyDLL("ole32.dll")
 	dwmapi  = syscall.NewLazyDLL("dwmapi.dll")
 	gdiplus = syscall.NewLazyDLL("gdiplus.dll")
 	shlwapi = syscall.NewLazyDLL("shlwapi.dll")
@@ -47,8 +52,12 @@ const (
 	wmClose   = 0x0010
 	wmErase   = 0x0014 // WM_ERASEBKGND
 	wmSetting = 0x001A // WM_SETTINGCHANGE: among others, light and dark were switched
+	wmCursor  = 0x0020 // WM_SETCURSOR
 	wmCommand = 0x0111
+	wmMove    = 0x0200 // WM_MOUSEMOVE
+	wmLDown   = 0x0201 // WM_LBUTTONDOWN
 	wmLButton = 0x0202 // WM_LBUTTONUP
+	wmLeave   = 0x02A3 // WM_MOUSELEAVE
 	wmRButton = 0x0205 // WM_RBUTTONUP
 	wmDPI     = 0x02E0 // WM_DPICHANGED: the window is now on a screen of another scale
 	wmApp     = 0x8000
@@ -60,15 +69,24 @@ const (
 	menuQuit      = 2
 	menuAutostart = 3
 	menuDebug     = 4
+	menuFolder    = 5
 
 	windowStyle = 0x00C80000 // WS_CAPTION | WS_SYSMENU: a fixed size, a close button
 
 	// The window's inside, in the pixels of a screen at 100 %.
-	clientWide, clientHigh = 420, 268
+	clientWide, clientHigh = 420, 352
 	margin                 = 24
-	cardTop, rowHigh       = 86, 40
-	column                 = 184 // where the values start
-	debugHigh              = 196 // what the debug setting adds below: a rule, then the details
+	cardTop, rowHigh, rows = 86, 40, 4
+	column                 = 184         // where the values start
+	inside                 = margin + 16 // the card's own margin
+	// The last row's value is a drop-down list: how often the saved files are looked at.
+	listTop, listHigh, listWide = cardTop + (rows-1)*rowHigh + 5, rowHigh - 10, clientWide - inside - column
+	// The button that asks for the game's folder, below the card, and the line of text below it.
+	buttonTop, buttonHigh, buttonWide = cardTop + rows*rowHigh + 12, 32, 220
+	onFolder, onList                  = 1, 2 // what the pointer is on
+	menuPoll                          = 100  // the first choice of the drop-down list
+	footTop                           = buttonTop + buttonHigh + 12
+	debugHigh                         = 196 // what the debug setting adds below: a rule, then the details
 )
 
 // colours of the window, each as 0xRRGGBB.
@@ -145,10 +163,18 @@ type window struct {
 	colours     palette
 	taskbarBack uint32 // the message Explorer sends when it starts again and has lost every icon
 	store       bool   // run from the Store package: Windows holds the switch of the start with the session
+	hover       int    // what the pointer is on: onFolder, onList, or 0
+	pressed     int    // what the mouse button went down on, until it comes up
+	choosing    bool   // the folder dialog is open
 }
 
 var win *window // the one window, for its procedure
 
+// call runs a function of Windows. What an argument points to is written as uintptr(unsafe.Pointer(&x)) in the
+// call itself: the directive below keeps x where it is and alive until Windows has answered, which a number alone
+// does not (the goroutine's stack moves when it grows or shrinks).
+//
+//go:uintptrescapes
 func call(dll *syscall.LazyDLL, name string, args ...uintptr) uintptr {
 	r, _, _ := dll.NewProc(name).Call(args...)
 	return r
@@ -400,6 +426,7 @@ func (w *window) menu() {
 	}
 	call(user32, "AppendMenuW", menu, 0, menuToggle, uintptr(unsafe.Pointer(utf16(text(label)))))
 	call(user32, "AppendMenuW", menu, 0x800, 0, 0) // MF_SEPARATOR
+	call(user32, "AppendMenuW", menu, 0, menuFolder, uintptr(unsafe.Pointer(utf16(text("choose")))))
 	if w.store {
 		call(user32, "AppendMenuW", menu, 0, menuAutostart, uintptr(unsafe.Pointer(utf16(text("startupsettings")))))
 	} else {
@@ -448,9 +475,31 @@ func (w *window) shapes(dc uintptr, dot uint32) {
 			}
 		})
 	}
-	x, y, wide, high, r := w.px(margin), w.px(cardTop), w.px(clientWide-2*margin), w.px(3*rowHigh), w.px(8)
+	x, y, wide, high, r := w.px(margin), w.px(cardTop), w.px(clientWide-2*margin), w.px(rows*rowHigh), w.px(8)
 	round(w.colours.edge, x, y, wide, high, r)
 	round(w.colours.card, x+1, y+1, wide-2, high-2, r-1)
+	// The button and the drop-down list, as Windows 11 draws plain ones: the card's colours, a shade darker under
+	// the pointer.
+	plain := func(which int, left, top, wide, high int32) {
+		face := w.colours.card
+		if w.hover == which {
+			face = w.colours.rule
+		}
+		round(w.colours.edge, w.px(left), w.px(top), w.px(wide), w.px(high), w.px(5))
+		round(face, w.px(left)+1, w.px(top)+1, w.px(wide)-2, w.px(high)-2, w.px(5)-1)
+	}
+	plain(onFolder, margin, buttonTop, buttonWide, buttonHigh)
+	plain(onList, column, listTop, listWide, listHigh)
+	// The list's arrow: two strokes that meet below.
+	var pen uintptr
+	if call(gdiplus, "GdipCreatePen1", argb(w.colours.dim), uintptr(math.Float32bits(float32(w.px(3))/2)), 2, // in pixels
+		uintptr(unsafe.Pointer(&pen))) == 0 {
+		tip := point{w.px(column + listWide - 18), w.px(listTop+listHigh/2) + w.px(2)}
+		for _, side := range []int32{-1, 1} {
+			call(gdiplus, "GdipDrawLineI", g, pen, uintptr(tip.x+side*w.px(4)), uintptr(tip.y-w.px(4)), uintptr(tip.x), uintptr(tip.y))
+		}
+		call(gdiplus, "GdipDeletePen", pen)
+	}
 	if w.picture != 0 {
 		call(gdiplus, "GdipDrawImageRectI", g, w.picture, uintptr(w.px(margin)), uintptr(w.px(22)), uintptr(w.px(44)), uintptr(w.px(44)))
 	}
@@ -526,25 +575,213 @@ func (w *window) paint() {
 	case v.Files > 0:
 		data = fmt.Sprintf(text("accounts"), v.Files)
 	}
-	const inside = margin + 16 // the card's own margin
-	for i, row := range [][2]string{{text("server"), state}, {text("lastsync"), last}, {text("gamedata"), data}} {
+	for i, row := range [rows][2]string{{text("server"), state}, {text("lastsync"), last}, {text("gamedata"), data},
+		{text("checkevery"), pollLabel(w.s.st.pollMinutes())}} {
 		top := int32(cardTop + i*rowHigh)
 		if i > 0 {
 			block(w.colours.rule, rect{w.px(inside), w.px(top), w.px(clientWide - inside), w.px(top) + 1})
 		}
-		value := int32(column)
-		if i == 0 {
-			value += 18 // after the dot
+		value, wide := int32(column), int32(clientWide-inside-column)
+		switch i {
+		case 0:
+			value, wide = value+18, wide-18 // after the dot
+		case rows - 1:
+			value, wide = value+12, wide-12-30 // inside the list, before its arrow
 		}
 		write(row[0], w.font, w.colours.dim, inside, top, column-inside-8, rowHigh, middle)
-		write(row[1], w.font, w.colours.ink, value, top, clientWide-inside-value, rowHigh, middle)
+		write(row[1], w.font, w.colours.ink, value, top, wide, rowHigh, middle)
 	}
-	write(foot, w.font, w.colours.dim, margin, cardTop+3*rowHigh+14, clientWide-2*margin, 44, 0x0010) // DT_WORDBREAK
+	write(text("choose"), w.font, w.colours.ink, margin, buttonTop, buttonWide, buttonHigh, middle|0x0001) // DT_CENTER
+	write(foot, w.font, w.colours.dim, margin, footTop, clientWide-2*margin, 44, 0x0010)                   // DT_WORDBREAK
 	if w.s.st.debug() {
 		block(w.colours.rule, rect{w.px(margin), w.px(clientHigh), w.px(clientWide - margin), w.px(clientHigh) + 1})
 		// DT_WORDBREAK | DT_EDITCONTROL: a folder's path has no space to break at, and is broken where the line ends.
 		write(w.s.details(), w.font, w.colours.dim, margin, clientHigh+12, clientWide-2*margin, debugHigh-24, 0x0010|0x2000)
 	}
+}
+
+// under tells what a mouse message's place (its lParam) is on: the button (onFolder), the drop-down list (onList),
+// or neither (0).
+func (w *window) under(lParam uintptr) int {
+	x, y := int32(int16(lParam&0xffff)), int32(int16(lParam>>16&0xffff))
+	within := func(left, top, wide, high int32) bool {
+		return x >= w.px(left) && x < w.px(left+wide) && y >= w.px(top) && y < w.px(top+high)
+	}
+	switch {
+	case within(margin, buttonTop, buttonWide, buttonHigh):
+		return onFolder
+	case within(column, listTop, listWide, listHigh):
+		return onList
+	}
+	return 0
+}
+
+// pointer follows the mouse over the window: the button or the list shows that it is under it.
+func (w *window) pointer(over int) {
+	if over == w.hover {
+		return
+	}
+	w.hover = over
+	if over != 0 { // to be told when the pointer leaves the window without crossing the rest of it
+		track := struct {
+			size, flags uint32
+			hwnd        uintptr
+			hoverTime   uint32
+		}{flags: 2, hwnd: w.hwnd} // TME_LEAVE
+		track.size = uint32(unsafe.Sizeof(track))
+		call(user32, "TrackMouseEvent", uintptr(unsafe.Pointer(&track)))
+	}
+	call(user32, "InvalidateRect", w.hwnd, 0, 0)
+}
+
+// choosePoll opens the drop-down list below its box: how often the saved files are looked at, the choice in use
+// marked. The choice made is remembered and holds from now on, starting with a look at once.
+func (w *window) choosePoll() {
+	menu := call(user32, "CreatePopupMenu")
+	defer call(user32, "DestroyMenu", menu)
+	now := w.s.st.pollMinutes()
+	for i, minutes := range pollChoices {
+		call(user32, "AppendMenuW", menu, 0, uintptr(menuPoll+i), uintptr(unsafe.Pointer(utf16(pollLabel(minutes)))))
+		if minutes == now {
+			call(user32, "CheckMenuRadioItem", menu, menuPoll, uintptr(menuPoll+len(pollChoices)-1), uintptr(menuPoll+i), 0) // by command
+		}
+	}
+	at := point{w.px(column), w.px(listTop + listHigh)}
+	call(user32, "ClientToScreen", w.hwnd, uintptr(unsafe.Pointer(&at)))
+	// TPM_RETURNCMD: the choice comes back here, not as a message.
+	chosen := int(call(user32, "TrackPopupMenu", menu, 0x0100, uintptr(at.x), uintptr(at.y), 0, w.hwnd, 0)) - menuPoll
+	// A click on the list's own box closes the list, and Windows then hands that click to the window: it is taken
+	// away, or it would open the list again.
+	var click msg
+	if call(user32, "PeekMessageW", uintptr(unsafe.Pointer(&click)), w.hwnd, wmLDown, wmLDown, 0) != 0 && // PM_NOREMOVE
+		w.under(click.lParam) == onList {
+		call(user32, "PeekMessageW", uintptr(unsafe.Pointer(&click)), w.hwnd, wmLDown, wmLDown, 1) // PM_REMOVE
+	}
+	if chosen < 0 || chosen >= len(pollChoices) || pollChoices[chosen] == now {
+		return
+	}
+	st := w.s.st
+	st.change(func() { st.PollMinutes = pollChoices[chosen] })
+	w.s.save()
+	w.s.look(false)
+	call(user32, "InvalidateRect", w.hwnd, 0, 0)
+}
+
+// chooseFolder asks the person where their World of Warcraft folder is, with Windows' own dialog, and has the
+// watching loop look there at once. It is what --wow-dir does, for who never opens a terminal.
+func (w *window) chooseFolder() {
+	if w.choosing {
+		return // the icon's menu still answers while the dialog is open: one dialog is enough
+	}
+	if !w.visible() {
+		w.toggle() // asked from the icon's menu: the dialog belongs to a window that shows
+	}
+	w.choosing = true
+	picked, ok := pickFolder(w.hwnd, text("choosetitle"))
+	w.choosing = false
+	if !ok {
+		return
+	}
+	root, ok := installFrom(picked)
+	if !ok {
+		message := fmt.Sprintf(text("notforever"), picked)
+		if flavors := otherFlavors(picked); flavors != "" {
+			message += "\n\n" + fmt.Sprintf(text("dotherflavor"), picked, flavors)
+		}
+		notify(message)
+		return
+	}
+	st := w.s.st
+	st.change(func() { st.WowDirs = []string{root} })
+	w.s.save()
+	log.Printf("game folder chosen: %s", root)
+	w.s.look(true)
+}
+
+type guid struct {
+	a    uint32
+	b, c uint16
+	d    [8]byte
+}
+
+var (
+	clsidFileOpenDialog = guid{0xDC1C5A9C, 0xE88A, 0x4DDE, [8]byte{0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7}}
+	iidFileOpenDialog   = guid{0xD57C7288, 0xD4AD, 0x4768, [8]byte{0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60}}
+)
+
+// peek reads the pointer-sized value at an address Windows gave.
+func peek(address uintptr) uintptr {
+	var value uintptr
+	call(kernel32, "RtlMoveMemory", uintptr(unsafe.Pointer(&value)), address, unsafe.Sizeof(value))
+	return value
+}
+
+// method calls the n-th function of a COM object (counted from 0, as its interface lists them) and tells whether
+// it succeeded: an HRESULT is 32 bits, negative for a failure, and "cancelled" is one. Its arguments are kept in
+// place as call's are.
+//
+//go:uintptrescapes
+func method(object uintptr, n uintptr, args ...uintptr) bool {
+	function := peek(peek(object) + n*unsafe.Sizeof(object))
+	result, _, _ := syscall.SyscallN(function, append([]uintptr{object}, args...)...)
+	return int32(result) >= 0
+}
+
+// The functions used, by their place in IFileOpenDialog and in IShellItem.
+const (
+	comRelease         = 2
+	dialogShow         = 3
+	dialogSetOptions   = 9
+	dialogGetOptions   = 10
+	dialogSetTitle     = 17
+	dialogGetResult    = 20
+	itemGetDisplayName = 5
+)
+
+// folderDialog makes Windows' dialog for opening a file, set to pick a folder of the disk: the one every program
+// shows since Windows Vista, with the address bar, the search and the person's pinned folders. Zero when Windows
+// gives none; the caller releases it.
+func folderDialog(title string) uintptr {
+	call(ole32, "CoInitializeEx", 0, 2) // COINIT_APARTMENTTHREADED, for this thread; asking twice does no harm
+	var dialog uintptr
+	if int32(call(ole32, "CoCreateInstance", uintptr(unsafe.Pointer(&clsidFileOpenDialog)), 0, 1, // CLSCTX_INPROC_SERVER
+		uintptr(unsafe.Pointer(&iidFileOpenDialog)), uintptr(unsafe.Pointer(&dialog)))) < 0 || dialog == 0 {
+		return 0
+	}
+	var options uint32
+	method(dialog, dialogGetOptions, uintptr(unsafe.Pointer(&options)))
+	// FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST
+	if !method(dialog, dialogSetOptions, uintptr(options|0x20|0x40|0x800)) {
+		method(dialog, comRelease)
+		return 0
+	}
+	method(dialog, dialogSetTitle, uintptr(unsafe.Pointer(utf16(title))))
+	return dialog
+}
+
+// pickFolder shows that dialog over the window and returns the folder picked, or false when the person gave up.
+func pickFolder(owner uintptr, title string) (string, bool) {
+	dialog := folderDialog(title)
+	if dialog == 0 {
+		return "", false
+	}
+	defer method(dialog, comRelease)
+	if !method(dialog, dialogShow, owner) {
+		return "", false
+	}
+	var item uintptr
+	if !method(dialog, dialogGetResult, uintptr(unsafe.Pointer(&item))) || item == 0 {
+		return "", false
+	}
+	defer method(item, comRelease)
+	var name uintptr                                                                                // a text Windows allocated: copied, then given back
+	if !method(item, itemGetDisplayName, 0x80058000, uintptr(unsafe.Pointer(&name))) || name == 0 { // SIGDN_FILESYSPATH
+		return "", false
+	}
+	defer call(ole32, "CoTaskMemFree", name)
+	path := make([]uint16, call(kernel32, "lstrlenW", name)+1)
+	call(kernel32, "RtlMoveMemory", uintptr(unsafe.Pointer(&path[0])), name, uintptr(len(path)*2))
+	return syscall.UTF16ToString(path), true
 }
 
 // setAutostart is the menu's first setting. For the Store package, Windows holds the switch: its page is opened.
@@ -600,7 +837,36 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			w.setAutostart()
 		case menuDebug:
 			w.setDebug()
+		case menuFolder:
+			w.chooseFolder()
 		}
+	case wmMove:
+		w.pointer(w.under(lParam))
+	case wmLeave:
+		w.pointer(0)
+		w.pressed = 0
+	case wmLDown:
+		w.pressed = w.under(lParam)
+	case wmLButton:
+		// A click is the button going down and coming up on the same thing: a button that comes up here after it
+		// went down elsewhere (a drag let go of, the click that closed a menu or started the program) is none.
+		pressed := w.pressed
+		w.pressed = 0
+		if w.under(lParam) != pressed {
+			break
+		}
+		switch pressed {
+		case onFolder:
+			w.chooseFolder()
+		case onList:
+			w.choosePoll()
+		}
+	case wmCursor:
+		if w.hover == 0 || lParam&0xffff != 1 { // HTCLIENT: the pointer is inside the window, not on its frame
+			return call(user32, "DefWindowProcW", hwnd, uintptr(message), wParam, lParam)
+		}
+		call(user32, "SetCursor", call(user32, "LoadCursorW", 0, 32649)) // IDC_HAND
+		return 1
 	case msgChange:
 		w.tray(1) // NIM_MODIFY
 		call(user32, "InvalidateRect", hwnd, 0, 0)

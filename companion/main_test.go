@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,6 +84,10 @@ func TestFindsEveryAccount(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(root, "_retail_", "WTF", "Account", "ONE", "SavedVariables"), 0o755)
 	if got := expandRoots([]string{filepath.Join(filepath.Dir(root), "*"), filepath.Join(root, "missing")}); len(got) != 1 || got[0] != root {
 		t.Fatalf("expandRoots = %v", got)
+	}
+	// Pointed to, recorded in the registry and found on the disk: one install, listed once.
+	if got := expandRoots([]string{root, root + string(filepath.Separator), filepath.Join(filepath.Dir(root), "*")}); len(got) != 1 || got[0] != root {
+		t.Fatalf("one install reached three ways: expandRoots = %v", got)
 	}
 	if got := findSavedFiles([]string{root, root}); len(got) != 2 {
 		t.Fatalf("findSavedFiles = %v", got)
@@ -247,11 +252,19 @@ func TestUnreachableSiteIsAskedAgainOnTheNextPass(t *testing.T) {
 	if web.status != 0 || web.uploads != 0 {
 		t.Fatalf("unreachable: %d status checks, %d uploads", web.status, web.uploads)
 	}
+	// That next pass comes soon, whatever wait the person chose between two looks at the saved files.
+	s.st.change(func() { s.st.PollMinutes = 10 })
+	if got := s.wait(); got != retryEvery {
+		t.Fatalf("unreachable: the next pass comes after %s", got)
+	}
 	s.url = server.URL
-	clock = clock.Add(pollEvery)
+	clock = clock.Add(retryEvery)
 	s.pass([]string{root})
 	if web.status != 1 || web.uploads != 1 {
 		t.Fatalf("a minute later: %d status checks, %d uploads; no answer was taken for a refusal", web.status, web.uploads)
+	}
+	if got := s.wait(); got != 10*time.Minute {
+		t.Fatalf("the site answers: the next pass comes after %s, not the 10 minutes chosen", got)
 	}
 }
 
@@ -260,26 +273,32 @@ func TestWowFoldersAreNotSearchedOnEveryPass(t *testing.T) {
 	searches := 0
 	var there []string
 	finder := &rootFinder{find: func() []string { searches++; return there }, now: func() time.Time { return clock }}
-	for i := 0; i < 3; i++ { // nothing found yet: every pass looks again
+	for i := 0; i < 5; i++ { // nothing found: the disks of a computer without the game are left alone too
 		finder.roots()
 		clock = clock.Add(pollEvery)
 	}
-	if searches != 3 {
-		t.Fatalf("nothing found: %d searches in 3 passes", searches)
+	if searches != 1 {
+		t.Fatalf("nothing found: %d searches in 5 passes", searches)
 	}
+	clock = clock.Add(rediscoverEvery) // a game installed since is found at the next search
 	there = []string{"/games/World of Warcraft"}
-	for i := 0; i < 20; i++ {
+	finder.roots()
+	finder.forget() // or at once, when the person points to its folder
+	if got := finder.roots(); searches != 3 || len(got) != 1 {
+		t.Fatalf("after the wait and after a folder was picked: %d searches, roots %v", searches, got)
+	}
+	for i := 0; i < 5; i++ {
 		if got := finder.roots(); len(got) != 1 || got[0] != there[0] {
 			t.Fatalf("roots = %v", got)
 		}
 		clock = clock.Add(pollEvery)
 	}
-	if searches != 4 {
-		t.Fatalf("folder known: %d searches in 20 passes", searches-3)
+	if searches != 3 {
+		t.Fatalf("folder known: %d searches in 5 passes", searches-3)
 	}
 	clock = clock.Add(rediscoverEvery)
 	finder.roots()
-	if searches != 5 {
+	if searches != 4 {
 		t.Fatalf("after the wait: %d searches", searches-3)
 	}
 }
@@ -464,7 +483,7 @@ func TestGameDetailsSayWhatIsMissing(t *testing.T) {
 	got := strings.Split(gameDetails(nil, []string{filepath.Join(dir, "*", "World of Warcraft"), retail,
 		filepath.Join(retail, "_retail_"), filepath.Join(dir, "none"), empty}, []string{gone}), "\n")
 	want := []string{texts["dnofolder"][0], retail + " holds _classic_, _retail_, but not _forever_: WoW Forever is not installed there.",
-		empty + " exists, but holds no game.", "The folder given with --wow-dir does not exist: " + gone}
+		empty + " exists, but holds no game.", "The game folder that was given (--wow-dir, or the window's button) does not exist: " + gone}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("no install:\n%s\nwanted:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
@@ -488,5 +507,189 @@ func TestGameDetailsSayWhatIsMissing(t *testing.T) {
 	writeSaved(t, root, "ONE", saved(""))
 	if got := line(); got != start+"1 account(s), 1 with the addon's data." {
 		t.Fatalf("all there: %q", got)
+	}
+}
+
+func TestAnInstallIsFoundWhereverItsPlayerPutIt(t *testing.T) {
+	top := t.TempDir()
+	mk := func(parts ...string) string {
+		path := filepath.Join(append([]string{top}, parts...)...)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	want := []string{
+		mk("Battlenet", wowFolder),         // a name no list has
+		mk("Games", "Blizzard", wowFolder), // two folders down
+		mk("Games", "Battlenet", wowFolder),
+		mk(wowFolder),
+		// Where Battle.net puts the game unless told otherwise, and inside the launcher's own folder in either
+		// Program Files.
+		mk("Program Files (x86)", wowFolder),
+		mk("Program Files (x86)", "Battle.net", wowFolder),
+		mk("Program Files", "Battle.net", wowFolder),
+	}
+	mk("a", "b", "c", wowFolder)  // further down than is looked
+	mk("$Recycle.Bin", wowFolder) // the system's
+	for _, out := range []string{"Windows", "WINDOWS.OLD", "ProgramData", "AppData", "OneDrive", "OneDrive - Rookie SA",
+		"onedrive", "Dropbox", "Google Drive", ".cache", "System Volume Information"} {
+		mk(out, wowFolder)          // never looked into, even for a folder of the right name
+		mk("Games", out, wowFolder) // wherever it is
+	}
+	mk(wowFolder, "_retail_", "Screenshots", wowFolder)                                     // inside an install
+	if err := os.WriteFile(filepath.Join(mk("Files"), wowFolder), nil, 0o644); err != nil { // a file of that name
+		t.Fatal(err)
+	}
+	got := installsBelow(top, 2)
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("found:\n%s\nwanted:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if got := installsBelow(top, 0); len(got) != 1 || got[0] != filepath.Join(top, wowFolder) {
+		t.Fatalf("at depth 0: %v", got)
+	}
+}
+
+func TestTheFolderPickedIsTakenForTheInstallAroundIt(t *testing.T) {
+	top := t.TempDir()
+	mk := func(parts ...string) string {
+		path := filepath.Join(append([]string{top}, parts...)...)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	wow := mk("Battlenet", wowFolder)
+	deep := mk("Battlenet", wowFolder, flavor, "WTF", "Account", "ONE", "SavedVariables")
+	for _, picked := range []string{wow, filepath.Join(wow, flavor), deep, filepath.Join(top, "Battlenet"), top} {
+		if got, ok := installFrom(picked); !ok || got != wow {
+			t.Fatalf("picked %s: %q, %v", picked, got, ok)
+		}
+	}
+	renamed := mk("Jeux", "WoW")
+	mk("Jeux", "WoW", flavor)
+	if got, ok := installFrom(renamed); !ok || got != renamed {
+		t.Fatalf("an install under another name: %q, %v", got, ok)
+	}
+	other := filepath.Dir(mk("Retail", wowFolder, "_retail_"))
+	if got, ok := installFrom(other); ok {
+		t.Fatalf("a folder without WoW Forever was taken: %q", got)
+	}
+}
+
+func TestTheFolderPickedIsLookedAtAtOnce(t *testing.T) {
+	clock := time.Now()
+	s := newSyncer("http://unused", &clock)
+	s.look(true) // nobody watches: nothing to wait for
+	s.search.Store(false)
+	s.wake = make(chan struct{}, 1)
+	s.look(false) // the wait between two looks was changed
+	s.look(true)  // then a folder was picked, before the loop woke: one waking, and the search is still asked for
+	select {
+	case <-s.wake:
+	default:
+		t.Fatal("the watching loop was not woken")
+	}
+	if !s.search.Swap(false) || s.search.Load() {
+		t.Fatal("the search asked for was lost")
+	}
+	select {
+	case <-s.wake:
+		t.Fatal("woken twice for one look")
+	default:
+	}
+	found := 0
+	finder := &rootFinder{find: func() []string { found++; return []string{"x"} }, now: func() time.Time { return clock }}
+	finder.roots()
+	finder.roots()
+	finder.forget()
+	finder.roots()
+	if found != 2 {
+		t.Fatalf("searched %d times: once, and once more after a folder was picked", found)
+	}
+	st := &state{}
+	st.change(func() { st.WowDirs = []string{"a"} })
+	if dirs := st.wowDirs(); len(dirs) != 1 || dirs[0] != "a" {
+		t.Fatalf("the folder pointed to: %v", dirs)
+	}
+}
+
+func TestThePlacesTheGameCouldBeAreNotSearchedOnEveryPass(t *testing.T) {
+	clock := time.Now()
+	s := newSyncer("http://unused", &clock)
+	s.pass(nil)
+	first := s.searched
+	if first.IsZero() {
+		t.Fatal("no game found, and the places it could be were not searched")
+	}
+	for i := 0; i < 5; i++ {
+		clock = clock.Add(pollEvery)
+		s.pass(nil)
+	}
+	if !s.searched.Equal(first) {
+		t.Fatal("searched again within the wait")
+	}
+	clock = clock.Add(rediscoverEvery)
+	s.pass(nil)
+	if !s.searched.Equal(clock) {
+		t.Fatal("not searched again after the wait")
+	}
+}
+
+func TestHowOftenTheSavedFilesAreLookedAt(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	path := filepath.Join(t.TempDir(), "state.json")
+	st := loadState(path)
+	if st.pollMinutes() != 1 {
+		t.Fatalf("unless chosen otherwise: every %d minutes", st.pollMinutes())
+	}
+	for _, minutes := range pollChoices {
+		st.change(func() { st.PollMinutes = minutes })
+		saveState(path, st)
+		if got := loadState(path).pollMinutes(); got != minutes {
+			t.Fatalf("chose %d, remembered %d", minutes, got)
+		}
+	}
+	for _, odd := range []int{-1, 0, 2, 15, 60} { // a state file written by hand, or by a version with other choices
+		st.change(func() { st.PollMinutes = odd })
+		if st.pollMinutes() != 1 {
+			t.Fatalf("%d minutes was taken", odd)
+		}
+	}
+	var labels []string
+	for _, minutes := range pollChoices {
+		labels = append(labels, pollLabel(minutes))
+	}
+	if got := strings.Join(labels, ", "); got != "every minute, every 5 minutes, every 10 minutes" {
+		t.Fatalf("the list reads: %s", got)
+	}
+}
+
+func TestAGameOnADiskThatWasNotReadyIsFoundWithoutASearch(t *testing.T) {
+	disk := filepath.Join(t.TempDir(), "F")
+	wow := filepath.Join(disk, "Battlenet", wowFolder)
+	st := &state{}
+	if st.remember(nil) || !st.remember([]string{wow}) || st.remember([]string{wow}) {
+		t.Fatal("where the game was found is news once, and nothing found is no news")
+	}
+	clock := time.Now()
+	searches := 0
+	finder := &rootFinder{now: func() time.Time { return clock },
+		find:  func() []string { searches++; return expandRoots(st.knownDirs()) },
+		quick: func() []string { return expandRoots(st.knownDirs()) }}
+	if got := finder.roots(); len(got) != 0 { // the session starts, the disk is not there yet
+		t.Fatalf("found %v on a disk that is away", got)
+	}
+	if err := os.MkdirAll(filepath.Join(wow, flavor), 0o755); err != nil { // and a moment later it is
+		t.Fatal(err)
+	}
+	clock = clock.Add(time.Minute)
+	if got := finder.roots(); len(got) != 1 || got[0] != wow || searches != 1 {
+		t.Fatalf("at the next pass: %v, after %d searches", got, searches)
+	}
+	if st.remember(nil); len(st.knownDirs()) != 1 {
+		t.Fatal("a search that found nothing made the place forgotten")
 	}
 }
