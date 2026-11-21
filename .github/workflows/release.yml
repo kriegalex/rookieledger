@@ -2,7 +2,8 @@ name: Release
 
 # A tag such as v0.2.0 publishes the addon (CurseForge, GitHub release) and the server image (GitHub Packages) and
 # attaches the companion app, once the tests of the tagged commit have passed, the companion app is built and
-# CHANGELOG.md is about that version.
+# CHANGELOG.md is about that version. CurseForge gets the addon only when the addon changed since the last release:
+# a version that is about the site alone is no update for who plays.
 on:
   push:
     tags: ["v*"]
@@ -127,10 +128,43 @@ jobs:
         with:
           fetch-depth: 0 # the packager reads the tags
           persist-credentials: false # the packager reaches GitHub with GITHUB_API_TOKEN, never through git
+      - name: Whether the addon changed since the last release
+        id: addon
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # What goes into the zip besides the changelog: the addon's folder, the licence, and .pkgmeta, which says
+          # what else does and which libraries. The last release is the last tag without a suffix: a v0.2.1 that
+          # follows v0.2.1-beta1 unchanged is still the first v0.2.1 that CurseForge gets as a release. A tag with a
+          # suffix is held against the last tag of either kind: who takes the betas has that one already.
+          case "$GITHUB_REF_NAME" in
+            *-*) kind=() ;;
+            *) kind=(--exclude '*-*') ;;
+          esac
+          # A tag whose run published nothing has no GitHub release, and CurseForge never got its addon: it is
+          # passed over. When GitHub does not answer, no tag counts and the addon is uploaded.
+          previous=
+          from="HEAD^"
+          while tag=$(git describe --tags --abbrev=0 "${kind[@]}" "$from" 2>/dev/null); do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              previous=$tag
+              break
+            fi
+            from="${tag}^"
+          done
+          if [ -n "$previous" ] && git diff --quiet "$previous" HEAD -- addon LICENSE .pkgmeta; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The addon is as in ${previous}: ${GITHUB_REF_NAME} is not uploaded to CurseForge"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      # The GitHub release is made either way: the companion app is attached to it. Without its token the packager
+      # leaves CurseForge alone.
       - uses: BigWigsMods/packager@01e8631a69c69d7654c788d152630d5fed9e3812 # v2.7.0
         env:
           GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GITHUB_OAUTH is the packager's deprecated name for it
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_API_TOKEN: ${{ steps.addon.outputs.changed == 'true' && secrets.CF_API_TOKEN || '' }}
 
   companion:
     needs: [build, addon]
