@@ -1,6 +1,6 @@
 """RookieLedger read API: the totals it serves, its paging, its HTTP manners, its key switch, and that every answer
 is what its OpenAPI document says. The service runs on a free local port with a temporary database."""
-import gzip, io, json, shutil, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import gzip, io, json, shutil, sys, tempfile, threading, time, unittest, urllib.error, urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -360,6 +360,54 @@ class Http(Service):
         spec = json.loads(self.call("/v1/openapi.json")[2])
         self.assertEqual((spec["openapi"], spec["security"], spec["servers"]), ("3.1.0", [], [{"url": "/v1"}]))
         self.assertNotIn("401", spec["paths"]["/creatures"]["get"]["responses"])
+
+
+class Metrics(Service):
+    def numbers(self, now=None):
+        text = ledger_api.metrics(self.db, now)
+        return {line.rsplit(" ", 1)[0]: int(line.rsplit(" ", 1)[1]) for line in text.splitlines() if line[0] != "#"}
+
+    def test_the_keeper_sees_what_tokens_are_worth(self):
+        self.assertEqual(self.numbers(), {'rookieledger_build_info{version="dev"}': 1})   # no database file yet
+        self.upload()                                                    # added by hand: counts at once
+        con = lc.connect(self.db)
+        for origin, token in (("1234abcd", "f" * 32), ("5678abcd", "e" * 32), ("9abcabcd", "d" * 32)):
+            lc.self_register(con, lc.token_hash(token), origin, 50)
+            lc.store_upload(con, lc.token_hash(token), origin, lc.check_record(as_saved(SECOND)))
+        # Whatever the upload service thought of these records: one is held, the others are not.
+        con.execute("UPDATE ledger_tokens SET held = CASE origin WHEN '5678abcd' THEN 'too fast' END")
+        con.execute("UPDATE ledger_tokens SET revoked_at = ? WHERE origin = '9abcabcd'", (lc.now_iso(),))
+        con.commit()
+        con.close()
+        seen = self.numbers()
+        self.assertEqual([seen['rookieledger_tokens{state="%s"}' % state] for state in
+                          ("counted", "probation", "held", "revoked")], [1, 1, 1, 1])
+        self.assertEqual((seen["rookieledger_tokens_registered_last_day"], seen['rookieledger_records{counted="all"}'],
+                          seen['rookieledger_records{counted="yes"}']), (3, 4, 1))
+        self.assertGreater(seen["rookieledger_database_bytes"], 0)
+        self.assertLess(abs(seen["rookieledger_last_upload_timestamp_seconds"] - time.time()), 60)
+        # Two days on, the one on probation counts and nobody registered in the last day.
+        later = self.numbers(time.time() + lc.PROBATION + 60)
+        self.assertEqual((later['rookieledger_tokens{state="counted"}'], later['rookieledger_tokens{state="probation"}'],
+                          later["rookieledger_tokens_registered_last_day"], later['rookieledger_records{counted="yes"}']),
+                         (2, 0, 0, 2))
+
+    def test_metrics_have_a_port_of_their_own(self):
+        self.assertEqual(self.call("/metrics")[0], 404)   # not on the port the internet reaches
+        watched = ledger_api.MetricsServer(("127.0.0.1", 0), self.db)
+        threading.Thread(target=watched.serve_forever, daemon=True).start()
+        try:
+            url = "http://127.0.0.1:%d" % watched.server_address[1]
+            with urllib.request.urlopen(url + "/metrics", timeout=10) as response:
+                self.assertIn("text/plain", response.headers["Content-Type"])
+                self.assertIn(b"rookieledger_build_info", response.read())
+            with self.assertRaises(urllib.error.HTTPError) as refused:
+                urllib.request.urlopen(url + "/v1", timeout=10)
+            self.assertEqual(refused.exception.code, 404)
+            refused.exception.close()
+        finally:
+            watched.shutdown()
+            watched.server_close()
 
 
 class Keys(Service):

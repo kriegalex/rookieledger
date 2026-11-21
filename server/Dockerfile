@@ -26,6 +26,7 @@ COPY ledger_admin.py ledger_api.py ledger_common.py ledger_ingest.py server/
 
 # Not root, and no name needed: the services run with a read-only root filesystem.
 USER 1000:1000
-EXPOSE 8787 8788
+# 9102 answers only when the read API is started with --metrics-port 9102 (or LEDGER_METRICS_PORT).
+EXPOSE 8787 8788 9102
 ENTRYPOINT ["python3", "-I", "-B"]
 CMD ["server/ledger_api.py"]
