@@ -25,7 +25,7 @@ An upload carries the uploader's own record and nothing else. `data/ledger.sqlit
 a file twice changes nothing. A token is tied to the record id of its first upload: it cannot upload another id, and
 no other token can upload that id (`unbind_token` lifts the tie, for a member who starts over with a new saved file).
 """
-import calendar, hashlib, json, os, re, secrets, signal, sqlite3, threading, time
+import calendar, hashlib, json, os, re, secrets, signal, sqlite3, sys, threading, time
 from pathlib import Path
 
 ROOT = Path(__file__).absolute().parent.parent
@@ -69,10 +69,13 @@ VERSION = os.environ.get("LEDGER_VERSION") or "dev"
 HEALTH = json.dumps({"status": "ok", "version": VERSION}, separators=(",", ":")).encode()
 
 
-def serve(server):
-    """Answers until the process is told to stop. SIGTERM is what a container runtime sends first; a process that is
-    the first of its container gets it only when it asks for it, and is otherwise killed once the wait is over."""
+def serve(server, ready):
+    """Answers until the process is told to stop, after writing `ready` to the log. SIGTERM is what a container
+    runtime sends first; a process that is the first of its container gets it only when it asks for it, and is
+    otherwise killed once the wait is over. The line is written once the signal is asked for: whoever waits for it
+    before stopping the service finds a service that stops."""
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
+    print(ready, file=sys.stderr, flush=True)
     try:
         server.serve_forever()
     finally:

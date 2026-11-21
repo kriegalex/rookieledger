@@ -807,13 +807,11 @@ def main():
                     help="also answer GET /metrics (Prometheus) on this port, for who runs the site; 0: no (default)")
     args = ap.parse_args()
     server = Server((args.host, args.port), args.db, args.prefix, args.auth)
-    print(f"ledger api on {args.host}:{args.port}{server.prefix}, auth {args.auth}, database {args.db}",
-          file=sys.stderr, flush=True)
     if args.metrics_port:
         watched = MetricsServer((args.host, args.metrics_port), args.db)
         threading.Thread(target=watched.serve_forever, daemon=True).start()
         print(f"metrics on {args.host}:{args.metrics_port}/metrics", file=sys.stderr, flush=True)
-    lc.serve(server)
+    lc.serve(server, f"ledger api on {args.host}:{args.port}{server.prefix}, auth {args.auth}, database {args.db}")
 
 
 if __name__ == "__main__":
