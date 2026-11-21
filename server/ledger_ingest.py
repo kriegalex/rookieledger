@@ -216,9 +216,7 @@ def main():
                          "open: a new token registers itself with its first upload")
     args = ap.parse_args()
     server = Server((args.host, args.port), args.db, args.registration)
-    print(f"ledger ingest on {args.host}:{args.port}, registration {args.registration}, database {args.db}",
-          file=sys.stderr, flush=True)
-    lc.serve(server)
+    lc.serve(server, f"ledger ingest on {args.host}:{args.port}, registration {args.registration}, database {args.db}")
 
 
 if __name__ == "__main__":
