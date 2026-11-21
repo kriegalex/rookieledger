@@ -323,9 +323,13 @@ python3 -m http.server 8080 --directory build/site                              
 - At the closest zoom the ground itself shows over each zone's own land: the game's minimap, which the build takes
   from the install square by square. Without `--install` there is no such zoom.
 - No name on the page comes from what members upload. Items are named from the game's tables. Those hold no
-  names of monsters, veins or herbs: the server tells them to the client as they are met. Monsters are named from
-  the install's own cache of what its player has met, so a monster only other members have met shows by its
-  number; a vein or a herb is named after what it gives.
+  names of monsters, veins or herbs: the server tells them to the client as they are met, and the client keeps
+  them in a cache file of the install, where `build_names.py` reads them. For the monsters only other members
+  have met, give it `--api https://<name of the API>/v1` as well: it writes a small addon into the install
+  (`tools/maps/asker`, in no release) with the list of the site's monsters that have no name. Start the game, enter
+  the world, wait for the addon's line in the chat, leave the game and build the names again: the client has asked
+  the server for them. The addon is taken out once every monster has a name; until then a monster shows by its
+  number. The names are in the install's language. A vein or a herb is named after what it gives.
 - Places on a map that is not a zone of the two continents (a dungeon, an instance) are not shown. A city's places
   are, where the city lies on its continent.
 - The lettering of the maps is part of the pictures: where zones meet, a neighbour's name can show twice.
