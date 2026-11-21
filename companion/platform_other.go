@@ -86,6 +86,10 @@ func removeAutostart() error {
 
 func notify(message string) { fmt.Println(message) }
 
+// keptOut is for Windows, where a folder's attributes tell what its name does not. The folders looked into here
+// are named one by one (platformRoots), not searched for.
+func keptOut(os.DirEntry) bool { return false }
+
 // lockInstance takes this user's lock (a file in the config folder, so two users of one machine do not meet).
 // running is true when another copy of this user holds it; any other failure is reported and does not stop the program.
 func lockInstance(dir string) (release func(), running bool, err error) {
