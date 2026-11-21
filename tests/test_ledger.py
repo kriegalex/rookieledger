@@ -297,6 +297,23 @@ class Endpoint(unittest.TestCase):
         lc.add_token(con, token, label)
         con.close()
 
+    def test_health_needs_no_token(self):
+        answer = self.raw(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        self.assertTrue(answer.startswith(b"HTTP/1.1 200 "), answer)
+        self.assertTrue(answer.endswith(b'{"status":"ok","version":"dev"}'), answer)
+
+    def test_sigterm_stops_the_service(self):
+        # As the first process of a container would get it: the service ends by itself, well before a kill.
+        service = subprocess.Popen([sys.executable, "-I", str(ROOT / "server" / "ledger_ingest.py"), "--host", "127.0.0.1",
+                                    "--port", "0", "--db", str(self.dir / "other.sqlite")], stderr=subprocess.PIPE)
+        try:
+            service.stderr.readline()   # the line it writes once it listens
+            service.terminate()
+            self.assertEqual(service.wait(timeout=10), 0)
+        finally:
+            service.kill()
+            service.stderr.close()
+
     def test_unregistered_token_gets_nothing(self):
         self.assertEqual(self.call("status")[0], 401)
         self.assertEqual(self.call("upload", body=SAVED.encode())[0], 401)

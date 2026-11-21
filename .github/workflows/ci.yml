@@ -35,6 +35,20 @@ jobs:
           go test ./...
           GOOS=windows GOARCH=amd64 go vet ./...
 
+  # The server image builds and both services answer in it, run as in production: a mistake shows here, not on the
+  # day of a release. Nothing is published from here.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and check the server image
+        run: |
+          docker build --build-arg VERSION=v0.0.0 -t rookieledger-server:ci server
+          server/image_test.sh rookieledger-server:ci v0.0.0
+
   windows:
     runs-on: windows-latest
     timeout-minutes: 10

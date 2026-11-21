@@ -17,7 +17,7 @@ other program. It only reads: the database is opened read-only and no request ch
   GET /v1/places                   every place of every map in one compact document: what a map page loads
   GET /v1/recipes[/{id}]           per recipe: the skill at which its colour turns, skill points per craft
   GET /v1/disenchants              per quality, class and item level: what disenchanting gave
-  GET /healthz                     200 while the process answers
+  GET /healthz                     200 while the process answers, with the version of the service
 
 What a client can rely on:
 - Totals over every record, never one member's: no record id, no token and no time of play leaves the database.
@@ -643,7 +643,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         prefix = self.server.prefix
         if url.path == "/healthz":
-            return self.send(200, b'{"status":"ok"}', headers=(("Cache-Control", "no-store"),))
+            return self.send(200, lc.HEALTH, headers=(("Cache-Control", "no-store"),))
         if url.path != prefix and not url.path.startswith(prefix + "/"):
             return self.problem(404, "no such resource; GET %s lists them" % prefix)
         auth = self.server.auth
@@ -728,7 +728,7 @@ def main():
     server = Server((args.host, args.port), args.db, args.prefix, args.auth)
     print(f"ledger api on {args.host}:{args.port}{server.prefix}, auth {args.auth}, database {args.db}",
           file=sys.stderr, flush=True)
-    server.serve_forever()
+    lc.serve(server)
 
 
 if __name__ == "__main__":

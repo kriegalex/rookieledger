@@ -5,6 +5,7 @@
 
   GET  /v1/ledger/status   204 when the bearer token is registered, 401 otherwise
   POST /v1/ledger/upload   a RookieLedger.lua saved-variables file (optionally gzip), 200 with a JSON summary
+  GET  /healthz            200 while the process answers, with the version of the service; no token needed
 
 Every request carries `Authorization: Bearer <token>`, the 32 hex digits the addon shows with /ledger token. The token
 is looked up (its SHA-256, in memory) before anything else: an unknown one gets 401 and the connection is closed
@@ -135,6 +136,13 @@ class Handler(BaseHTTPRequestHandler):
         return known
 
     def do_GET(self):
+        if self.path == "/healthz":   # for the probe of whatever runs the service: it is not below PREFIX
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(lc.HEALTH)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return self.wfile.write(lc.HEALTH)
         if self.path != PREFIX + "status":
             return self.reply(404, close=True)
         if self.authorised():
@@ -206,7 +214,7 @@ def main():
     server = Server((args.host, args.port), args.db, args.registration)
     print(f"ledger ingest on {args.host}:{args.port}, registration {args.registration}, database {args.db}",
           file=sys.stderr, flush=True)
-    server.serve_forever()
+    lc.serve(server)
 
 
 if __name__ == "__main__":

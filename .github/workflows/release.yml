@@ -1,7 +1,8 @@
 name: Release
 
-# A tag such as v0.2.0 publishes the addon (CurseForge, GitHub release) and attaches the companion app, once
-# the tests of the tagged commit have passed, the companion app is built and CHANGELOG.md is about that version.
+# A tag such as v0.2.0 publishes the addon (CurseForge, GitHub release) and the server image (GitHub Packages) and
+# attaches the companion app, once the tests of the tagged commit have passed, the companion app is built and
+# CHANGELOG.md is about that version.
 on:
   push:
     tags: ["v*"]
@@ -85,6 +86,35 @@ jobs:
           path: RookieLedgerSync.msix
           if-no-files-found: error
           retention-days: 30
+
+  # The site as an image, ghcr.io/<owner>/rookieledger-server:<tag>: what a cluster runs is the tagged commit and
+  # nothing else. The run's summary gives the digest to pin in the deployment.
+  image:
+    needs: [test, changelog]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write # pushes the image to this repository's packages
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build, check and publish
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rookieledger-server"
+          docker build --build-arg VERSION="$GITHUB_REF_NAME" -t "$image:$GITHUB_REF_NAME" server
+          server/image_test.sh "$image:$GITHUB_REF_NAME" "$GITHUB_REF_NAME"
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$image:$GITHUB_REF_NAME"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$GITHUB_REF_NAME")
+          {
+            echo "### Server image"
+            echo
+            echo "\`$image:$GITHUB_REF_NAME@${digest##*@}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   addon:
     needs: [test, changelog, build]

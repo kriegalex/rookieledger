@@ -329,7 +329,7 @@ class Http(Service):
                              (status, "application/problem+json", status, "no-store"), path)
             self.assertTrue(problem["title"] and problem["detail"] and problem["type"])
         self.assertEqual(self.call("/v1/creatures", "POST")[1]["Allow"], "GET, HEAD, OPTIONS")
-        self.assertEqual(self.call("/healthz")[::2], (200, b'{"status":"ok"}'))
+        self.assertEqual(self.call("/healthz")[::2], (200, b'{"status":"ok","version":"dev"}'))
 
     def test_answers_kept_ready_stay_within_their_budget(self):
         self.upload()

@@ -25,7 +25,7 @@ An upload carries the uploader's own record and nothing else. `data/ledger.sqlit
 a file twice changes nothing. A token is tied to the record id of its first upload: it cannot upload another id, and
 no other token can upload that id (`unbind_token` lifts the tie, for a member who starts over with a new saved file).
 """
-import calendar, hashlib, json, re, secrets, sqlite3, time
+import calendar, hashlib, json, os, re, secrets, signal, sqlite3, threading, time
 from pathlib import Path
 
 ROOT = Path(__file__).absolute().parent.parent
@@ -63,6 +63,20 @@ ID_RE = re.compile(r"[0-9a-f]{8}")
 # (and "\" as "\\", so that an escape cannot be faked): raw, a carriage return or a terminal sequence could rewrite
 # a log line as it is read. The standard library's own log_message does the same; the services replace that method.
 LOG_SAFE = str.maketrans({c: "\\x%02x" % c for c in (*range(0x20), *range(0x7f, 0xa0))} | {ord("\\"): "\\\\"})
+
+# What this copy of server/ is: the release tag in the published image (server/Dockerfile), "dev" from a checkout.
+VERSION = os.environ.get("LEDGER_VERSION") or "dev"
+HEALTH = json.dumps({"status": "ok", "version": VERSION}, separators=(",", ":")).encode()
+
+
+def serve(server):
+    """Answers until the process is told to stop. SIGTERM is what a container runtime sends first; a process that is
+    the first of its container gets it only when it asks for it, and is otherwise killed once the wait is over."""
+    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 class LedgerError(ValueError):

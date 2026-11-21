@@ -145,6 +145,18 @@ python3 -I server/ledger_admin.py list | revoke <token, who or record id> | unbi
 python3 -I server/ledger_admin.py digest [hours] | approve <who or record id>   # for a site with open registration
 ```
 
+Each release also publishes `server/` as a container image, `ghcr.io/kriegalex/rookieledger-server:<tag>`
+(`server/Dockerfile`). It runs as an unprivileged user with a read-only root filesystem; the database is
+`/app/data/ledger.sqlite`, the one path to mount:
+
+```sh
+docker run -d -v ledger:/app/data -p 8787:8787 ghcr.io/kriegalex/rookieledger-server:<tag> server/ledger_ingest.py
+docker run -d -v ledger:/app/data -p 8788:8788 ghcr.io/kriegalex/rookieledger-server:<tag>   # the read API
+docker exec <container> python3 -I server/ledger_admin.py list
+```
+
+Both services answer `GET /healthz` without a token, with the version they run, and stop cleanly on SIGTERM.
+
 A site running an older `server/` keeps accepting uploads from a newer addon: what it does not know of a record
 (quest items, before v0.4.0) is left out, not refused. Update `server/` to keep it.
 
