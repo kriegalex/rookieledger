@@ -41,7 +41,23 @@ holds three numbers: when it began, when it last changed, and how many seconds o
 that takes uploads from anyone uses them to tell a record that was played from one that was made up. A record is named by a random 8-digit id made on first login. A record only
 grows: a skill range widens, a count goes up.
 
-Beside the record, the addon keeps one small file per character that never leaves your computer. The companion app
+In a group the record counts nothing: there a corpse is one member's to open, and what the group rolls for never
+shows in a loot window. To work out what could be counted there, the addon keeps a log while you are in a group,
+beside the record in the same saved file. The site keeps it apart from the records, for 90 days, and makes nothing
+it serves from it. A line of the log is a time and one thing the game told the addon:
+
+- the size of the group, its loot method and threshold, the kind of instance and the map it is on;
+- a monster's death, who the game named as its killer and whether the corpse was yours to open;
+- what a loot window held, slot by slot, and what your coin grew by once it closed;
+- a roll that started, its item, and the monsters that had just died;
+- that someone received an item or coin, as the chat says it: the item's number or the amount.
+
+A member is written as "me", "party2" or "other", never by name, and of a chat line no text is kept. A corpse is
+written as the creature's number and a fingerprint of the game's name for it: the same for every member who saw
+that corpse, so that the lines of two members can be put side by side, without the realm and the time of appearance
+that the name itself tells. The log keeps its last 4000 lines.
+
+Beside the record and that log, the addon keeps one small file per character that never leaves your computer. The companion app
 does not read it. It holds:
 
 - the game's own names for the last 500 corpses it counted, so that a corpse opened again after a reload or a new
@@ -124,7 +140,7 @@ block unsigned programs with no bypass.
 - Until your token is registered, it asks "is this token known?" at most once every 30 minutes and sends nothing else.
 - Once registered, it sends the addon's account-wide saved file
   (`WTF/Account/<account>/SavedVariables/RookieLedger.lua`) when its content has changed, with the token. That file
-  holds the record described above, gathering places included. The per-character file of the same name, one folder
+  holds the record described above, gathering places included, and the log of groups. The per-character file of the same name, one folder
   deeper, is not read.
 - On Windows it also asks the site every 10 minutes whether it is up, without the token, when nothing else was
   sent in that time: the window shows the answer.
@@ -143,6 +159,7 @@ python3 -I server/ledger_ingest.py --port 8787 --db data/ledger.sqlite   # behin
 python3 -I server/ledger_admin.py add <token> "<who>"                   # register a member's token
 python3 -I server/ledger_admin.py list | revoke <token, who or record id> | unbind <token or who> | summary | purge
 python3 -I server/ledger_admin.py digest [hours] | approve <who or record id>   # for a site with open registration
+python3 -I server/ledger_admin.py group-log [record id]                 # what members saw of loot in a group
 ```
 
 Each release also publishes `server/` as a container image, `ghcr.io/kriegalex/rookieledger-server:<tag>`
@@ -333,6 +350,9 @@ packager fetches them into the zip, each at the version `externals` names in `.p
 [docs/client-behaviour.md](docs/client-behaviour.md) lists what the Forever client was seen to tell an addon about
 kills, corpses and loot windows, with the number of cases behind each statement. Read it before changing what the
 addon takes a loot window for.
+
+The log of groups is written by `addon/RookieLedger/Group.lua` and read by `group_lines` in
+`server/ledger_common.py`; `ledger_admin.py group-log` prints what the site holds of it.
 
 A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/ledger_common.py` (`check_record`)
 and both tests together. What the read API serves is made in `server/ledger_api.py` from one table of routes, which

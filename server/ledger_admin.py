@@ -17,6 +17,9 @@
   python3 -I server/ledger_admin.py summary                what the records say: thresholds, skill-ups, disenchants,
                                                            gathering yields and places, corpses looted per creature,
                                                            quest items
+  python3 -I server/ledger_admin.py group-log [record id]  what members saw of loot in a group, line by line as
+                                                           the addon wrote it, after the record id, the time the
+                                                           log was begun and the line's number (tab-separated)
   python3 -I server/ledger_admin.py api-key add "<program>"     make a key of the read API for one program; it is
                                                                 shown once
   python3 -I server/ledger_admin.py api-key revoke "<program>"  stop accepting that program's keys
@@ -89,6 +92,7 @@ def main():
     sub.add_parser("list")
     sub.add_parser("purge")
     sub.add_parser("summary")
+    sub.add_parser("group-log").add_argument("origin", nargs="?")
     key = sub.add_parser("api-key")
     key.add_argument("action", choices=("add", "revoke", "list"))
     key.add_argument("label", nargs="?")
@@ -119,6 +123,9 @@ def main():
         print("\n".join(lc.digest(con, args.hours)) or "no token registered itself and none is held")
     elif args.command == "unbind":
         print(f"unbound {lc.unbind_token(con, args.token_or_label)} token(s)")
+    elif args.command == "group-log":
+        for row in lc.group_log(con, args.origin):
+            print(*row, sep="\t")
     elif args.command == "purge":
         print(f"deleted {lc.purge_relayed(con)} relayed record(s)")
     elif args.command == "list":

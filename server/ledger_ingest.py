@@ -5,6 +5,7 @@
 
   GET  /v1/ledger/status   204 when the bearer token is registered, 401 otherwise
   POST /v1/ledger/upload   a RookieLedger.lua saved-variables file (optionally gzip), 200 with a JSON summary
+                           of the record it holds. The log of groups in the same file is kept apart, for study
   GET  /healthz            200 while the process answers, with the version of the service; no token needed
 
 Every request carries `Authorization: Bearer <token>`, the 32 hex digits the addon shows with /ledger token. The token
@@ -178,7 +179,9 @@ class Handler(BaseHTTPRequestHandler):
                         raise lc.LedgerError("file too large")
                 if len(data) > MAX_TEXT:
                     raise lc.LedgerError("file too large")
-                origin, own = lc.check_db(lc.parse_saved_variables(data.decode("utf-8")))
+                saved = lc.parse_saved_variables(data.decode("utf-8"))
+                origin, own = lc.check_db(saved)
+                group = lc.group_lines(saved)
         except (lc.LedgerError, zlib.error, UnicodeDecodeError, RecursionError) as error:
             return self.reply(400, {"error": str(error)})
         con = lc.connect(self.server.db_path)
@@ -186,6 +189,7 @@ class Handler(BaseHTTPRequestHandler):
             if not registered:
                 lc.self_register(con, digest, origin, MAX_SELF_PER_DAY)
             changed = lc.store_upload(con, digest, origin, own)
+            lc.store_group_log(con, origin, group)   # beside the record, never in it: see lc.group_lines
         except lc.LedgerFull as error:
             return self.reply(429, {"error": str(error)})
         except lc.LedgerConflict as error:
