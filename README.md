@@ -331,7 +331,10 @@ A change to the record shape goes into `addon/RookieLedger/Record.lua`, `server/
 and both tests together. What the read API serves is made in `server/ledger_api.py` from one table of routes, which
 is also what its OpenAPI document is written from; `tests/test_api.py` holds every answer against that document.
 
-Releases: push a tag such as `v0.2.0`. The workflow runs the tests above on the tagged commit, builds the companion
+Changes reach `main` through pull requests, one short-lived branch per feature or fix; `main` takes no direct
+push (`CLAUDE.md` has the rules).
+
+Releases: push a tag such as `v0.2.0` on a commit of `main`. The workflow runs the tests above on the tagged commit, builds the companion
 binaries and checks that `CHANGELOG.md` starts with `# RookieLedger v0.2.0`; it publishes nothing if one of these
 fails. It then packages the addon with the [BigWigs packager](https://github.com/BigWigsMods/packager), uploads it
 to CurseForge when its token is set as a repository secret, and attaches the binaries to the GitHub

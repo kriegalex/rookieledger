@@ -36,5 +36,6 @@ ignore:
   - tests
   - tools
   - README.md
+  - CLAUDE.md
 
 enable-nolib-creation: no
