@@ -23,9 +23,11 @@ Sections 1 to 5 come from [`tools/Probe.lua`](../tools/Probe.lua) and section 8 
 observation, which register the events below, call the functions below at fixed moments and write one line per
 answer to a saved variable. They record nothing in the ledger. To repeat an observation, follow the steps at the top
 of the file. Sections 6 and 7 come from playing with the addon and reading its saved files afterwards. Section 10 comes
-from a line typed in chat that prints the three events with the skill, read off a screenshot.
+from a line typed in chat that prints the three events with the skill, read off a screenshot. Section 11 comes from
+a probe of the same kind, run by one member of a group of three on build 71037.
 
-Nothing here was observed in a dungeon, in a group, or outside that starting zone.
+Section 11 apart, nothing here was observed in a group or outside that starting zone. Nothing was observed in a
+dungeon.
 
 ## 1. Kills and deaths
 
@@ -198,6 +200,41 @@ and so on to the fifth craft, whose point came after its `UNIT_SPELLCAST_SUCCEED
 - Read that way, a queue of five such crafts was counted with one point each: 5 of 5, with v0.6.2-beta1. The same
   queue under v0.6.1 was counted with no point, then one, one, one and two.
 
+## 11. Loot in a group
+
+Three rounds in the open world, in a group of three, all seen from one member's side: no second member ran the
+probe.
+
+What the client tells of the group:
+
+- `C_PartyInfo.GetLootMethod()` returns a number: `3` under group loot, `0` under free for all, each as set in the
+  game. The global `GetLootMethod` is absent.
+- `GetLootThreshold()` returned `2` with the threshold at uncommon.
+
+Under group loot:
+
+- A corpse is one member's to open, whoever killed it. The first value of `CanLootUnit` was `true` for some of
+  the partners' kills and `false` for some of the character's own. In one round, 14 of 24 corpses were the
+  character's to open and 10 were not.
+- That member's window held the corpse's coin, its items below the threshold, and the member's own quest items
+  (seventh value of `GetLootSlotInfo` `true`, as alone).
+- The coin in the window is the corpse's whole coin, not the member's share. The character then received a third
+  of it, rounded up: 35 of 104, 43 of 129, 23 of 67. One case does not fit: 29 of 54.
+- An item at or above the threshold never showed in a window. The one roll seen (`START_LOOT_ROLL`) started 0.2 s
+  after the monster's death, before anyone had opened the corpse.
+
+Otherwise:
+
+- Under free for all any member can open any corpse, so a window may hold what another member left.
+- `LOOT_READY` is announced twice per window, about 0.25 s apart, as alone (section 4).
+- The name a chat event gives for a member did not match the name `UnitName` gives. The twelfth value of a chat
+  event is that member's GUID, which does match `UnitGUID`.
+- Addon messages on the `PARTY` channel pass, a corpse's GUID included, and come back to their sender after about
+  0.3 s. RookieLedger sends none.
+
+The addon counts nothing in a group. It writes down what it is told there, one line per death, window, roll and
+chat line about loot (`Group.lua`), so that these statements can be checked from several members' sides at once.
+
 ## Not verified
 
 Read elsewhere, not tried:
@@ -224,5 +261,7 @@ Never met:
 - An item that two quests of the log ask for at once.
 
 - A first, successful Pick Pocket on a monster with nothing in its pocket: whether a loot window opens.
-- Loot in a group, where a window shows one member's share.
+- In a group: whether the window of the member a corpse belongs to holds the whole corpse, as seen from a second
+  member; which monster a roll belongs to when several die together; anything under master loot, round robin or
+  need before greed, in a raid or in a dungeon.
 - Higher-level monsters, elites and bosses: whether they can hold nothing.

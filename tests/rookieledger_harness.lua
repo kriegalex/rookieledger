@@ -2,9 +2,10 @@
 -- to send anything: an attempt is an error, and a failed check at the end when the addon caught that error.
 --   lua5.1 tests/rookieledger_harness.lua addon/RookieLedger [saved-variables-out.lua]
 -- Prints "ok <name>" per check and exits non-zero on the first failure. With a second argument it writes client A's
--- RookieLedgerDB in the layout the game gives a saved-variables file, for the server's parser tests.
+-- RookieLedgerDB and RookieLedgerGroup in the layout the game gives a saved-variables file, for the server's parser
+-- tests.
 local ADDON_DIR, OUT = arg[1], arg[2]
-local FILES = { "Core.lua", "Record.lua", "Scan.lua", "Tooltip.lua", "UI.lua" }
+local FILES = { "Core.lua", "Record.lua", "Scan.lua", "Group.lua", "Tooltip.lua", "UI.lua" }
 
 local clock = 0
 local timers = {}
@@ -57,14 +58,31 @@ local function newClient(name)
     env.C_AddOns = { GetAddOnMetadata = function(addon, field)
         return addon == "RookieLedger" and field == "Version" and c.version or nil
     end }
+    env._G = env
     env.UnitGUID = function(unit)
         if unit == "mouseover" then return c.mouseover end
+        if unit:match("^party") or unit:match("^raid") then return c.party and c.party[unit] end
         return unit == "target" and c.target or ("Player-6941-" .. name)
     end
     env.UnitIsPlayer = function(unit) return unit ~= "mouseover" end
     env.UnitName = function(unit) return unit == "target" and c.targetName or name end
     env.date = os.date
     env.IsInGroup = function() return c.grouped == true end
+    -- The group: three members under group loot from uncommon up. c.party = { party1 = guid }, c.canLoot = { [guid]
+    -- = whether the corpse is ours to open }, c.money the character's coin, c.rolls = { [roll] = item }.
+    env.IsInRaid = function() return false end
+    env.GetNumGroupMembers = function() return c.grouped and 3 or 0 end
+    env.C_PartyInfo = { GetLootMethod = function() return 3 end }
+    env.GetLootThreshold = function() return 2 end
+    env.IsInInstance = function() return false, "none" end
+    env.GetMoney = function() return c.money or 0 end
+    env.CanLootUnit = function(guid) return (c.canLoot and c.canLoot[guid]) == true, true end
+    env.GetLootRollItemLink = function(roll)
+        return c.rolls and c.rolls[roll] and ("|Hitem:" .. c.rolls[roll] .. "::|h[Bâton de Zorglub]|h") or nil
+    end
+    env.GetLootRollItemInfo = function() return 132089, "Bâton de Zorglub", 1, 2, false, true, true end
+    env.LOOT_ITEM_SELF, env.LOOT_ITEM = "Vous recevez le butin : %s.", "%s reçoit le butin : %s."
+    env.LOOT_ITEM_MULTIPLE, env.LOOT_MONEY_SPLIT = "%s reçoit le butin : %sx%d.", "Votre part du butin est de %s."
     env.GOLD_AMOUNT, env.SILVER_AMOUNT, env.COPPER_AMOUNT = "%d Or", "%d Argent", "%d Cuivre"
     env.SlashCmdList, env.StaticPopupDialogs = {}, {}
     env.StaticPopup_Show = function(which) c.popup = which end
@@ -931,6 +949,87 @@ A.ns.Tooltip.SetFrom(0)
 A.nodropdown = nil
 A.mouseover = nil
 
+-- The log of groups ---------------------------------------------------------------
+-- In a group nothing is counted; what the client tells of loot there is written down, line by line, for study.
+
+local function glog() return A.env.RookieLedgerGroup end
+local function gline(back) return glog().l[#glog().l - (back or 0)] end
+A.env.RookieLedgerGroup = { v = 1, l = "x" }
+A.load(A.db)
+check("a damaged log is begun again", glog().v == 1 and glog().n == 0 and #glog().l == 0 and glog().k >= 1794800000)
+local mate = "Player-6941-0B0B0B0B"
+local dead = corpse(8001, "0000004002")
+A.lootSource, A.canLoot, A.money = corpse(8000, "0000004001"), { [dead] = true }, 1000
+A.fire("PARTY_KILL", mate, A.lootSource)
+lootWindow({ { 2589, 1 } })
+A.fire("CHAT_MSG_MONEY", "Vous ramassez 3 Cuivre.")
+run(3)
+check("nothing is written outside a group", glog().n == 0)
+A.grouped, A.party = true, { party1 = mate }
+A.fire("GROUP_ROSTER_UPDATE")
+A.fire("GROUP_ROSTER_UPDATE")
+check("a session's first line tells the client and the addon", glog().n == 2
+    and glog().l[1]:match("^%d+%.%d%d S build=70374 version=v0%.2%.1 locale=frFR$"), glog().l[1])
+check("the group, its loot method and threshold are written when they change",
+    gline():match(" G members=3 raid=0 method=3 threshold=2 instance=none map=%d+$"), gline())
+A.fire("PARTY_KILL", mate, dead)
+A.fire("UNIT_DIED", dead)
+run(3)
+check("a death is one line: when, whose kill, and whether the corpse is ours to open", glog().n == 3
+    and gline():match(" D c8001%.%x%x%x%x%x%x%x%x %-2%.%d%d by=party1 0%.5=1,1 2%.0=1,1$"), gline())
+A.lootSource = dead
+A.loot = { { coin = "1 Argent\n4 Cuivre" }, { 2589, 2 }, { 9999, 1, quest = true } }
+A.fire("LOOT_READY")
+A.fire("LOOT_READY")
+check("a loot window is one line: every slot, its quality and the corpse it names", glog().n == 4
+    and gline():match(" W method=3 threshold=2 coin=104@c8001%.%x+%*1 i2589x2q1@c8001%.%x+%*2 i9999x1q1Q@c8001%.%x+%*1$"),
+    gline())
+A.money, A.canLoot[dead] = 1035, false
+A.fire("LOOT_CLOSED")
+A.loot = {}
+run(2)
+check("after the window: what the character's coin grew by, and the corpse", glog().n == 5
+    and gline():match(" E purse=%+35 c8001%.%x+=0,1$"), gline())
+check("in a group the record still counts nothing", A.db.own.m[8001] == nil)
+run(5)
+A.fire("UNIT_DIED", corpse(8001, "0000004003"))
+run(0.2)
+A.rolls = { [7] = 4568 }
+A.fire("START_LOOT_ROLL", 7, 60000, 3)
+check("a roll that starts: its item and the monsters that just died",
+    gline():match(" R START_LOOT_ROLL 7,60000,3 item=i4568 info=132089,s,1,2,0,1,1 deaths=c8001%.%x+:%-0%.%d%d$"), gline())
+run(3)
+A.fire("CHAT_MSG_LOOT", "Zorglub reçoit le butin : |cff1eff00|Hitem:4568::|h[Bâton de Zorglub]|h|rx2.", "Zorglub-Sargeras",
+    "", "", "Zorglub", "", 0, 0, "", 0, 0, mate)
+check("a chat line about an item: whose, which item, which of the client's texts", gline():match(" L party1 i4568 LOOT_ITEM_MULTIPLE 2$"),
+    gline())
+A.fire("CHAT_MSG_MONEY", "Votre part du butin est de 35 Cuivre.")
+check("a chat line about coin: the amount", gline():match(" M 35 LOOT_MONEY_SPLIT$"), gline())
+A.fire("CHAT_MSG_LOOT", "Zorglub a choisi Besoin pour : |Hitem:4568::|h[x]|h", "Zorglub", "", "", "", "", 0, 0, "", 0, 0, "Player-6941-0C0C")
+check("a text the client has no format for here, of a player outside the group", gline():match(" L other i4568 %- %-$"), gline())
+do
+    local all = table.concat(glog().l, "\n")
+    check("the log holds no name, and no corpse or player as the game names them", not all:find("Zorglub", 1, true)
+        and not all:find("Sargeras", 1, true) and not all:find("Creature-", 1, true) and not all:find("Player-", 1, true))
+    check("every line starts with its time", not ("\n" .. all):find("\n[^%d]") and not all:find("[^ -~\n]"))
+end
+local k, written = glog().k, glog().n
+A.load(A.db)
+A.fire("LOOT_SLOT_CLEARED", 1)
+check("a reload keeps the log and starts a session", glog().k == k and glog().n == written + 3
+    and gline(2):find(" S build=", 1, true) and gline(1):find(" G members=3", 1, true) and gline():match(" R LOOT_SLOT_CLEARED 1$"))
+A.grouped = false
+A.fire("GROUP_ROSTER_UPDATE")
+A.fire("LOOT_SLOT_CLEARED", 2)
+check("leaving the group is written, and nothing after it", gline():match(" G none$") and glog().n == written + 4)
+A.grouped = true
+for i = 1, 4100 do
+    A.fire("LOOT_SLOT_CLEARED", i)
+end
+A.grouped, A.party, A.lootSource = false, nil, nil
+check("a full log lets its oldest lines go and still counts them", #glog().l <= 4000 and #glog().l > 3000
+    and glog().n == written + 4 + 4100 and gline():match(" R LOOT_SLOT_CLEARED 4100$"), #glog().l)
+
 -- Saved-variables layout -------------------------------------------------------
 
 local function dump(value, out, depth)
@@ -967,6 +1066,8 @@ end
 if OUT then
     local out = { "\nRookieLedgerDB = " }
     dump(A.db, out, 0)
+    out[#out + 1] = "\nRookieLedgerGroup = "
+    dump(A.env.RookieLedgerGroup, out, 0)
     out[#out + 1] = "\n"
     local f = assert(io.open(OUT, "w"))
     f:write(table.concat(out))
