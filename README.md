@@ -364,9 +364,10 @@ push (`CLAUDE.md` has the rules).
 Releases: push a tag such as `v0.2.0` on a commit of `main`. The workflow runs the tests above on the tagged commit, builds the companion
 binaries and checks that `CHANGELOG.md` starts with `# RookieLedger v0.2.0`; it publishes nothing if one of these
 fails. It then packages the addon with the [BigWigs packager](https://github.com/BigWigsMods/packager), uploads it
-to CurseForge when its token is set as a repository secret, and attaches the binaries to the GitHub
-release. Update `CHANGELOG.md` first: it is the release text. A tag with a suffix, such as `v0.2.1-beta1`, is
-checked against the heading of its version, `# RookieLedger v0.2.1`.
+to CurseForge when its token is set as a repository secret and the addon changed since the last release that was
+published (`addon/`, `LICENSE` or `.pkgmeta`; a version that is about the site alone reaches no player's addon
+manager), and attaches the binaries to the GitHub release. Update `CHANGELOG.md` first: it is the release text. A
+tag with a suffix, such as `v0.2.1-beta1`, is checked against the heading of its version, `# RookieLedger v0.2.1`.
 
 The Windows app can also be packaged for the Microsoft Store: `companion/store/` holds the package manifest, its
 logos and `package.ps1`, which makes an `.msix` from a built `RookieLedgerSync.exe`. The release workflow keeps that
