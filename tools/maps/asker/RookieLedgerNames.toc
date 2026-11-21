@@ -1,0 +1,6 @@
+## Interface: 16001
+## Title: RookieLedger names (map build tool)
+## Notes: Asks the game for the names of the monsters the map page cannot name yet. Written into the game by tools/maps/build_names.py; not part of the RookieLedger addon and in no release.
+
+Ids.lua
+Names.lua
