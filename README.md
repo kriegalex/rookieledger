@@ -136,7 +136,7 @@ the token. The app's log shows only the first six digits of a token.
 
 ## Running a site of your own
 
-`server/` is the whole site: an upload service and a read API, Python 3.12 standard library, one SQLite file.
+`server/` is the whole site: an upload service and a read API, Python 3.15 standard library, one SQLite file.
 
 ```sh
 python3 -I server/ledger_ingest.py --port 8787 --db data/ledger.sqlite   # behind a TLS reverse proxy

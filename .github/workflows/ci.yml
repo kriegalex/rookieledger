@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false # nothing below talks to the repository; the tests run with no token on disk
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12" # the version the README names for the server, not the runner image's own
+          python-version: "3.15" # the version of the server image (server/Dockerfile), not the runner image's own
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: companion/go.mod
