@@ -7,8 +7,9 @@
 -- Gathering: after a Mining or Herb Gathering cast, the vein or herb the loot window names as its source, what it
 --   held, and where on the map the player stood.
 -- Monster loot: for every corpse a loot window names as a source, the kind of monster, the items of every quality
---   and the coin it held. Only while not in a group (there the window shows one member's share), only what is not
---   a quest item, and each corpse once. A window opened by Skinning or Pick Pocket names a creature too, but holds
+--   and the coin it held. Only while not in a group (there a corpse is one member's to open, and its window leaves
+--   out what the group rolls for: Group.lua writes down what is seen there), only what is not a quest item, and
+--   each corpse once. A window opened by Skinning or Pick Pocket names a creature too, but holds
 --   nothing it dropped: it is not read.
 -- Quest items: a quest item only drops for who has the quest, so it is counted apart, against the corpses looted
 --   while the quest still wanted it. Which quest that is comes from the quest log: the objective whose text names
@@ -743,6 +744,7 @@ local function Copper(text)
     -- holds (the plural mark of some locales, "%d |4coin:coins;") is not one of them.
     return total and not rest:find("%d") and total or nil
 end
+Scan.Copper = Copper
 
 -- A loot window that is neither a disenchant's nor a gather's: corpses, if every source it names is one.
 local function CorpseLoot()

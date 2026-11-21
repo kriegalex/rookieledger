@@ -5,6 +5,8 @@
 --           upload; the site accepts uploads only for tokens its owner has registered. It never goes out in game.
 --   id      8 hex digits naming this account's record on the site. Not a character name.
 --   own     this account's record (see Record.lua).
+-- RookieLedgerGroup (one per WoW account, in the same file) holds the log of what was seen of loot in a group, which
+--   the site keeps apart from the records (see Group.lua).
 -- RookieLedgerLocal (one per character) holds what only this computer needs and the companion app never reads:
 --   seen    the corpses counted last, so that one opened again after a reload or a new login is not counted twice
 --           (see Scan.lua). They are the game's own names for them, which tell the realm and when each appeared:
@@ -331,6 +333,9 @@ frame:SetScript("OnEvent", function(_, event, name)
         SlashCmdList.ROOKIELEDGER = Command
     elseif ns.db then
         ns.Scan.Init()
+        if ns.Group then
+            pcall(ns.Group.Init)   -- the log of groups is for study: without it everything else works
+        end
         if ns.Tooltip then
             pcall(ns.Tooltip.Init)   -- a client without that tooltip loses it, and nothing else
         end

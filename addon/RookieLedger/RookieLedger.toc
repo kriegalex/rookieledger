@@ -8,7 +8,7 @@
 ## Version: @project-version@
 ## X-Curse-Project-ID: 1817843
 ## IconTexture: Interface\AddOns\RookieLedger\Media\Icon
-## SavedVariables: RookieLedgerDB
+## SavedVariables: RookieLedgerDB, RookieLedgerGroup
 ## SavedVariablesPerCharacter: RookieLedgerLocal
 
 Libs\LibStub\LibStub.lua
@@ -19,5 +19,6 @@ Libs\LibDBIcon-1.0\lib.xml
 Core.lua
 Record.lua
 Scan.lua
+Group.lua
 Tooltip.lua
 UI.lua
