@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -119,6 +120,103 @@ func TestUploadAddressIsRemembered(t *testing.T) {
 	st.setURL("default")
 	if st.uploadURL() != defaultURL {
 		t.Fatalf("back to the default: %q", st.uploadURL())
+	}
+	// Another site has none of the files: what the last one accepted is forgotten. The same address changes nothing.
+	st.Files["a"], st.LastSync = fileState{SHA: "1"}, time.Now()
+	if st.setURL(defaultURL+"/") || len(st.Files) != 1 || st.customURL() != "" {
+		t.Fatalf("the RookieLedger site's own address is the default: %q, %v", st.customURL(), st.Files)
+	}
+	if !st.setURL("https://other.example/v1/ledger") || len(st.Files) != 0 || !st.LastSync.IsZero() {
+		t.Fatalf("another site: files %v, last sync %v", st.Files, st.LastSync)
+	}
+}
+
+func TestTheAddressTypedInTheWindow(t *testing.T) {
+	for typed, want := range map[string]string{
+		"":                                       "",
+		"  ":                                     "",
+		"default":                                "",
+		defaultURL:                               "",
+		defaultURL + "/":                         "",
+		"rookieledger-api.21crypto.ch":           "",
+		"RookieLedger-API.21crypto.ch":           "",
+		"Example.ORG":                            "https://example.org/v1/ledger",
+		"example.org":                            "https://example.org/v1/ledger",
+		" https://example.org/ ":                 "https://example.org/v1/ledger",
+		"HTTPS://example.org":                    "https://example.org/v1/ledger",
+		"https://example.org:8443/rl/v1/ledger/": "https://example.org:8443/rl/v1/ledger",
+		"https://[2001:db8::1]":                  "https://[2001:db8::1]/v1/ledger",
+		"localhost:8080":                         "https://localhost:8080/v1/ledger",
+		"http://localhost:8080":                  "http://localhost:8080/v1/ledger",
+		"HTTP://LocalHost":                       "http://localhost/v1/ledger",
+		"http://127.0.0.1:5000/v1/ledger/":       "http://127.0.0.1:5000/v1/ledger",
+		"http://[::1]:5000":                      "http://[::1]:5000/v1/ledger",
+	} {
+		if got, err := siteAddress(typed); err != nil || got != want {
+			t.Errorf("siteAddress(%q) = %q, %v; want %q", typed, got, err, want)
+		}
+	}
+	for _, typed := range []string{"http://example.org", "http://192.168.1.10", "http://localhost.example.org",
+		"http://127.0.0.1.example.org", "http://[2001:db8::1]", "ftp://localhost", "ftp://example.org", "https://", "https://:443",
+		"https://me:secret@example.org", "https://example.org/v1/ledger?x=1", "https://example.org/#top",
+		"exa mple.org", "not an address at all"} {
+		if got, err := siteAddress(typed); err == nil {
+			t.Errorf("siteAddress(%q) = %q, taken", typed, got)
+		}
+	}
+}
+
+func TestRedirectsStayEncrypted(t *testing.T) {
+	ask := func(to string, hops int) error {
+		req := httptest.NewRequest("POST", to, nil)
+		return checkRedirect(req, make([]*http.Request, hops))
+	}
+	for _, to := range []string{"https://example.org/v1/ledger", "http://localhost:8080/v1/ledger", "http://127.0.0.1/v1/ledger"} {
+		if err := ask(to, 1); err != nil {
+			t.Errorf("redirect to %s refused: %v", to, err)
+		}
+	}
+	for _, to := range []string{"http://example.org/v1/ledger", "http://192.168.1.10/v1/ledger"} {
+		if err := ask(to, 1); err == nil {
+			t.Errorf("redirect to %s followed: the token would travel unencrypted", to)
+		}
+	}
+	if err := ask("https://example.org/v1/ledger", 10); err == nil {
+		t.Error("an eleventh redirect followed")
+	}
+}
+
+func TestAnotherSiteIsSentEverythingAtOnce(t *testing.T) {
+	first, second := &site{registered: true}, &site{registered: true}
+	one, two := httptest.NewServer(first), httptest.NewServer(second)
+	defer one.Close()
+	defer two.Close()
+	root := t.TempDir()
+	writeSaved(t, root, "ONE", saved(""))
+	clock := time.Now()
+	s := newSyncer(one.URL, &clock)
+	saves := 0
+	s.save = func() { saves++ }
+	s.pass([]string{root})
+	if first.uploads != 1 || s.view().LastSync.IsZero() {
+		t.Fatalf("first site: %d uploads, %+v", first.uploads, s.view())
+	}
+	s.point(two.URL)
+	if s.url != one.URL {
+		t.Fatalf("the address changed under a pass: %q", s.url)
+	}
+	s.pass([]string{root}) // the same file, unchanged since the first site took it
+	if second.uploads != 1 || second.status != 1 || first.uploads != 1 || s.url != two.URL || s.st.customURL() != two.URL {
+		t.Fatalf("second site: %d uploads after %d questions, first %d, uploading to %q, remembered %q",
+			second.uploads, second.status, first.uploads, s.url, s.st.customURL())
+	}
+	if saves < 2 {
+		t.Fatalf("the new address is not saved: %d saves", saves)
+	}
+	s.point(two.URL) // saved again unchanged: nothing is sent again
+	s.pass([]string{root})
+	if second.uploads != 1 {
+		t.Fatalf("the same address again: %d uploads", second.uploads)
 	}
 }
 
@@ -409,7 +507,7 @@ func TestDetailsSayWhyTheSiteIsNotReached(t *testing.T) {
 	if v := ask(); !v.Up || v.Problem != "" {
 		t.Fatalf("an answer is no problem: %+v", v)
 	}
-	if got := s.details(); got != "Uploads to "+server.URL+"\nLog: sync.log" {
+	if got := s.details(); got != "" {
 		t.Fatalf("details with nothing wrong: %q", got)
 	}
 	web.code = http.StatusBadGateway
@@ -430,6 +528,45 @@ func TestDetailsSayWhyTheSiteIsNotReached(t *testing.T) {
 	s.url, s.client.Timeout = "http://"+hang(t), 200*time.Millisecond
 	if v := ask(); v.Up || !strings.HasPrefix(v.Problem, texts["timeout"][0]) {
 		t.Fatalf("no answer in time: %+v", v)
+	}
+}
+
+func TestAnAddressThatIsNotARookieLedgerSiteIsSaidToBeWrong(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	web := &door{code: http.StatusNotFound} // any web server, or the right one at the wrong path
+	server := httptest.NewServer(web)
+	defer server.Close()
+	clock := time.Now()
+	s := newSyncer(server.URL, &clock)
+	ask := func() view {
+		_, _, _ = s.request("GET", "status", "", nil)
+		return s.view()
+	}
+	if v := ask(); v.Up || !v.Wrong || !strings.Contains(v.Problem, "not a RookieLedger server (answer 404)") {
+		t.Fatalf("a server that is not a RookieLedger site: %+v", v)
+	}
+	if !strings.Contains(s.details(), "not a RookieLedger server") {
+		t.Fatalf("the details leave it out: %q", s.details())
+	}
+	for _, code := range []int{http.StatusNoContent, http.StatusUnauthorized, http.StatusTooManyRequests} {
+		web.code = code
+		if v := ask(); !v.Up || v.Wrong || v.Problem != "" {
+			t.Fatalf("a RookieLedger site's answer %d: %+v", code, v)
+		}
+	}
+	// The RookieLedger site's own address answering oddly is that site being down, not the person's mistake. A
+	// local server stands in for it.
+	stand := httptest.NewTLSServer(web)
+	defer stand.Close()
+	transport := stand.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = "example.com" // a name the test certificate holds
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, stand.Listener.Addr().String())
+	}
+	web.code = http.StatusNotFound
+	s.url, s.client.Transport = defaultURL, transport
+	if v := ask(); v.Up || v.Wrong || !strings.Contains(v.Problem, "answered 404") {
+		t.Fatalf("the RookieLedger site answering 404: %+v", v)
 	}
 }
 
@@ -482,7 +619,7 @@ func TestGameDetailsSayWhatIsMissing(t *testing.T) {
 	gone := filepath.Join(dir, "gone")
 	got := strings.Split(gameDetails(nil, []string{filepath.Join(dir, "*", "World of Warcraft"), retail,
 		filepath.Join(retail, "_retail_"), filepath.Join(dir, "none"), empty}, []string{gone}), "\n")
-	want := []string{texts["dnofolder"][0], retail + " holds _classic_, _retail_, but not _forever_: WoW Forever is not installed there.",
+	want := []string{texts[noFolderText][0], retail + " holds _classic_, _retail_, but not _forever_: WoW Forever is not installed there.",
 		empty + " exists, but holds no game.", "The game folder that was given (--wow-dir, or the window's button) does not exist: " + gone}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("no install:\n%s\nwanted:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

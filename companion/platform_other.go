@@ -18,6 +18,9 @@ import (
 // systemd starts the unit at once, so the process that installed it has nothing left to do.
 const installHandsOver = true
 
+// noFolderText is the key of the text that says the game was not found: here --wow-dir points to it.
+const noFolderText = "dnofolderflag"
+
 const unitName = "rookieledger-sync.service"
 
 // serve runs the watching loop. There is no window here: the journal says what the program does.
@@ -104,11 +107,17 @@ func lockInstance(dir string) (release func(), running bool, err error) {
 	return func() { f.Close() }, false, nil
 }
 
-// settle makes this process the one copy that runs for this user.
-func settle(dir string, st *state, _ bool) (release func(), proceed bool) {
+// settle makes this process the one copy that runs for this user. With renewed, the start brought a setting
+// (--url, --wow-dir), which the caller takes once settle has said yes: a copy that already runs keeps it out, and
+// the person is told to stop that copy first.
+func settle(dir string, st *state, renewed bool) (release func(), proceed bool) {
 	release, running, err := lockInstance(dir)
 	if running {
-		notify(text("running") + "\n\n" + describe(st))
+		if renewed { // nothing asks the copy that runs to leave: the settings given wait for it to be stopped
+			notify(text("notrenewedunit"))
+		} else {
+			notify(text("running") + "\n\n" + describe(st))
+		}
 		return nil, false
 	}
 	if err != nil {

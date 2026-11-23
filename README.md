@@ -132,12 +132,16 @@ that file and uploads it.
    The app looks at the game's saved files every minute; the window's drop-down list changes that to every 5 or
    10 minutes. The game only writes those files when you log out or reload. While the site does not answer, the
    app tries again every minute, whatever was chosen.
-   The right-click menu also holds two settings. *Start with Windows* is ticked at first: untick it and the app
-   runs only when you start it. *Show details (debug)* makes the window say why something does not work: why the
-   site was not reached (no connection, a name not found, a firewall or antivirus in between, the site down), and
-   what was found of the game (each install with its accounts, whether the addon is there and has saved, or a
-   `World of Warcraft` folder that holds another version of the game but not `_forever_`). The same details go to
-   the app's log, `%AppData%\RookieLedgerSync\sync.log`.
+   *Start with Windows*, below *Check for new data*, is on at first: switch it off and the app runs only when
+   you start it. The *Advanced settings* button opens three more below. *Address* is the site the app uploads to: left
+   empty, it is the RookieLedger site; for a site of your own or of your guild, type the address its keeper gives
+   you (a name such as `example.org` is enough) and press Enter or *Save*. Only `https://` addresses are taken, and
+   the app sends your data to the new site at once; the line below the field says whether the address answers as a
+   RookieLedger server. *Show details (debug)* makes the window say why something does
+   not work: why the site was not reached (no connection, a name not found, a firewall or antivirus in between,
+   the site down), and what was found of the game (each install with its accounts, whether the addon is there and
+   has saved, or a `World of Warcraft` folder that holds another version of the game but not `_forever_`). The same
+   details go to the app's log, whose place the last line shows: `%AppData%\RookieLedgerSync\sync.log`.
    Linux: `chmod +x rookieledger-sync-linux-amd64 && ./rookieledger-sync-linux-amd64 --install` (a systemd user unit).
 3. Play. On a site open to all, such as the one this addon was written for, uploads start by themselves after your
    next game session. On a site that registers tokens by hand, type `/ledger token` in game and give the token to
@@ -154,7 +158,7 @@ block unsigned programs with no bypass.
 | `--once` | One pass, then exits |
 | `--install` / `--uninstall` | Adds or removes the start with your session (Windows: `--uninstall` also stops and removes the installed copy) |
 | `--wow-dir DIR` | The `World of Warcraft` folder, when it is not found by itself (remembered); on Windows the window's button does the same |
-| `--url URL` | Another site's upload address (remembered; `--url default` goes back) |
+| `--url URL` | Another site's upload address, read as the window's *Address* reads it: `example.org` is enough, and only `https://` is taken, but for a site on the same computer. Remembered; `--url default` goes back |
 | `--background` | Windows: starts without opening the window, as the start with your session does |
 
 ### What the app sends, and where
@@ -249,7 +253,10 @@ that registers itself with one is held until approved. Tokens you registered by 
 Who knocks at the upload door without a member's token is answered with a notice of what the door is for, and
 that generating data for it is not authorised. It keeps no one out; it tells an honest program, an AI agent
 included, to stop.
-Members point the companion app at your site once: `--url https://<your site>/v1/ledger`.
+Members point the companion app at your site once: on Windows by typing its name in the window's *Advanced
+settings*, elsewhere with `--url <your site>`. The app sends only to `https://` addresses, as the token goes with
+every request: plain `http://` is taken for a site on the same computer only (`localhost`, `127.0.0.1`, `::1`), to
+try one out.
 
 A database that received uploads from versions with guild sync (before v0.2.0) still holds the copies of other
 members' records those versions sent along. Nothing reads them; `purge` deletes them. Copy the SQLite file first:
@@ -402,7 +409,8 @@ file with its run, as the artifact `store-package`, to be uploaded to Partner Ce
 the Store signs what it publishes. The Store takes no version that starts with 0: while the project is at 0.x, its
 version there is `1.0.N.0`, where N goes up by one with each release.
 Run from its package, the app leaves installing, starting with the session and updating to Windows: it copies
-itself nowhere and writes no Run key.
+itself nowhere and writes no Run key, and its *Start with Windows* line opens Windows' *Startup apps* page, where
+that switch is.
 
 ## Licence
 
