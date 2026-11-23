@@ -13,17 +13,17 @@ import (
 )
 
 // The program shows an icon in the notification area and a small window: whether the site answers, when a file was
-// last accepted, and whether the addon's data was found. The window opens when a person starts the program and
-// stays closed when the session does (--background). A drop-down list in it sets how often the saved files are
-// looked at, and a button in it asks for the game's folder, with Windows' own folder dialog, for when the program
-// does not find it by itself. Its close button hides it, and the icon's menu shows it again or quits. That menu
-// also asks for the game's folder and holds the two settings: whether the program starts with the session, and
-// whether the window says more (the debug setting: below the card and the button, why the site or the game's data
-// is not found).
+// last accepted, whether the addon's data was found, how often the saved files are looked at (a drop-down list) and
+// whether the program starts with the session (a switch). A button in it asks for the game's folder, with Windows'
+// own folder dialog, for when the program does not find it by itself; another opens the advanced settings below:
+// the upload address, the debug setting (the window then says why the site or the game's data is not found) and
+// where the log is. The window opens when a person starts the program and stays closed when the session does
+// (--background). Its close button hides it, and the icon's menu shows it again or quits.
 //
-// The window is drawn by hand, in the manner of Windows 11: the system's font, a rounded card on the settings
+// The window is drawn by hand, in the manner of Windows 11: the system's font, rounded cards on the settings
 // pages' grey, light or dark as the person chose for apps, and at the scale of the screen it is on. Shapes go
-// through GDI+, which smooths their edges; text goes through GDI, which draws it as the rest of Windows does.
+// through GDI+, which smooths their edges; text goes through GDI, which draws it as the rest of Windows does. The
+// address field alone is Windows' own: typing, the caret, selecting and pasting are not redone by hand.
 
 // A window's messages come to the thread that made it: the main goroutine stays on the main thread.
 func init() { runtime.LockOSThread() }
@@ -53,7 +53,9 @@ const (
 	wmErase   = 0x0014 // WM_ERASEBKGND
 	wmSetting = 0x001A // WM_SETTINGCHANGE: among others, light and dark were switched
 	wmCursor  = 0x0020 // WM_SETCURSOR
+	wmKeyDown = 0x0100
 	wmCommand = 0x0111
+	wmEditBg  = 0x0133 // WM_CTLCOLOREDIT: the address field asks for its colours
 	wmMove    = 0x0200 // WM_MOUSEMOVE
 	wmLDown   = 0x0201 // WM_LBUTTONDOWN
 	wmLButton = 0x0202 // WM_LBUTTONUP
@@ -65,40 +67,58 @@ const (
 	msgChange = wmApp + 2 // the view changed
 	msgQuit   = wmApp + 3 // a newer copy asks this one to leave
 
-	menuToggle    = 1
-	menuQuit      = 2
-	menuAutostart = 3
-	menuDebug     = 4
-	menuFolder    = 5
+	menuToggle = 1
+	menuQuit   = 2
+	menuPoll   = 100 // the first choice of the drop-down list
+	fieldID    = 10  // the address field, as its messages name it
 
-	windowStyle = 0x00C80000 // WS_CAPTION | WS_SYSMENU: a fixed size, a close button
+	// WS_CLIPCHILDREN | WS_CAPTION | WS_SYSMENU: a fixed size, a close button, and the window's painting goes around
+	// the address field.
+	windowStyle = 0x02C80000
 
 	// The window's inside, in the pixels of a screen at 100 %.
-	clientWide, clientHigh = 420, 352
+	clientWide             = 420
 	margin                 = 24
-	cardTop, rowHigh, rows = 86, 40, 4
+	cardTop, rowHigh, rows = 86, 40, 5
 	column                 = 184         // where the values start
 	inside                 = margin + 16 // the card's own margin
-	// The last row's value is a drop-down list: how often the saved files are looked at.
-	listTop, listHigh, listWide = cardTop + (rows-1)*rowHigh + 5, rowHigh - 10, clientWide - inside - column
-	// The button that asks for the game's folder, below the card, and the line of text below it.
-	buttonTop, buttonHigh, buttonWide = cardTop + rows*rowHigh + 12, 32, 220
-	onFolder, onList                  = 1, 2 // what the pointer is on
-	menuPoll                          = 100  // the first choice of the drop-down list
-	footTop                           = buttonTop + buttonHigh + 12
-	debugHigh                         = 196 // what the debug setting adds below: a rule, then the details
+	// The fourth row's value is a drop-down list: how often the saved files are looked at. The fifth's is a switch
+	// (On or Off written before it), or, for the Store package, a button that opens Windows' own.
+	listTop, listHigh, listWide = cardTop + 3*rowHigh + 5, rowHigh - 10, clientWide - inside - column
+	startTop, startWide         = cardTop + 4*rowHigh, 172
+	switchWide, switchHigh      = 40, 20
+	stateWide                   = 80
+	switchLeft                  = clientWide - inside - switchWide
+	stateLeft                   = switchLeft - 10 - stateWide
+	// Below the card: the button that asks for the game's folder, the one that opens the advanced settings, and a
+	// line of text.
+	buttonTop, buttonHigh, buttonWide = cardTop + rows*rowHigh + 12, 32, 200
+	moreLeft, moreWide                = margin + buttonWide + 8, clientWide - 2*margin - buttonWide - 8
+	footTop, footHigh                 = buttonTop + buttonHigh + 10, 40
+	clientHigh                        = footTop + footHigh + 8 // with the advanced settings closed
+	// The advanced settings: a second card of three rows (the address, the debug setting, the log), the address's
+	// with a note below its field in the room its longest text takes (the window's noteHigh), then, while the debug
+	// setting is on, the details, in as much room as they need up to maxDetails.
+	moreTop, noteTop    = clientHigh, clientHigh + rowHigh - 2
+	fieldLeft, saveWide = inside + 64, 88
+	saveLeft            = clientWide - inside - saveWide
+	fieldWide           = saveLeft - 8 - fieldLeft
+	maxDetails          = 196
+	// What the pointer is on.
+	onFolder, onList, onStart, onMore, onField, onSave, onDebug = 1, 2, 3, 4, 5, 6, 7
 )
 
 // colours of the window, each as 0xRRGGBB.
 type palette struct {
 	back, card, edge, rule, ink, dim, up, down, idle uint32
+	accent, knob                                     uint32 // a switch that is on, and its knob: Windows' own blue
 }
 
 var (
 	lightColours = palette{back: 0xF3F3F3, card: 0xFFFFFF, edge: 0xE5E5E5, rule: 0xEDEDED, ink: 0x1B1B1B, dim: 0x5F5F5F,
-		up: 0x0F7B0F, down: 0xC42B1C, idle: 0x8A8A8A}
+		up: 0x0F7B0F, down: 0xC42B1C, idle: 0x8A8A8A, accent: 0x005FB8, knob: 0xFFFFFF}
 	darkColours = palette{back: 0x202020, card: 0x2B2B2B, edge: 0x3A3A3A, rule: 0x383838, ink: 0xFFFFFF, dim: 0xC5C5C5,
-		up: 0x6CCB5F, down: 0xFF99A4, idle: 0x9A9A9A}
+		up: 0x6CCB5F, down: 0xFF99A4, idle: 0x9A9A9A, accent: 0x60CDFF, knob: 0x000000}
 )
 
 // colorref is a colour as GDI takes it (0x00bbggrr), argb as GDI+ does (opaque).
@@ -161,11 +181,19 @@ type window struct {
 	trayIcon    uintptr // and at the notification area's
 	picture     uintptr // the large icon as a GDI+ image, for the window's heading
 	colours     palette
-	taskbarBack uint32 // the message Explorer sends when it starts again and has lost every icon
-	store       bool   // run from the Store package: Windows holds the switch of the start with the session
-	hover       int    // what the pointer is on: onFolder, onList, or 0
-	pressed     int    // what the mouse button went down on, until it comes up
-	choosing    bool   // the folder dialog is open
+	taskbarBack uint32  // the message Explorer sends when it starts again and has lost every icon
+	store       bool    // run from the Store package: Windows holds the switch of the start with the session
+	hover       int     // what the pointer is on: onFolder, onList and the others, or 0
+	pressed     int     // what the mouse button went down on, until it comes up
+	choosing    bool    // the folder dialog is open
+	advanced    bool    // the advanced settings show
+	detailsHigh int32   // the room the details take, in the pixels of a screen at 100 %; 0 when they do not show
+	noteHigh    int32   // the room of the note below the address field: its longest text and a gap, likewise
+	field       uintptr // the address field, Windows' own
+	fieldBrush  uintptr // its background: the card's colour
+	lineHigh    int32   // a line of the window's font, in the screen's pixels: the field's height
+	address     string  // the address saved, "" for the RookieLedger site
+	fieldError  string  // why what was typed in the field was not taken, until it is typed again
 }
 
 var win *window // the one window, for its procedure
@@ -240,12 +268,65 @@ func darkApps() bool {
 
 func (w *window) px(n int32) int32 { return (n*w.dpi + 48) / 96 }
 
+// noteTexts are the keys of what the note below the address field can say (see note): the note takes the room of the
+// longest, so that the rows below it stay in place whatever it says.
+var noteTexts = []string{"addresshelp", "addresschecking", "addressok", "addresswrong", "addressdown", "needhttps"}
+
+// Below the note, the advanced settings' second and third rows, then the details; in the pixels of a screen at 100 %.
+func (w *window) debugTop() int32   { return noteTop + w.noteHigh }
+func (w *window) logTop() int32     { return w.debugTop() + rowHigh }
+func (w *window) moreHigh() int32   { return w.logTop() + rowHigh - moreTop }
+func (w *window) detailsTop() int32 { return moreTop + w.moreHigh() + 12 }
+
 // high is the height of the window's inside, in the pixels of a screen at 100 %.
 func (w *window) high() int32 {
-	if w.s.st.debug() {
-		return clientHigh + debugHigh
+	switch {
+	case !w.advanced:
+		return clientHigh
+	case w.detailsHigh > 0:
+		return w.detailsTop() + w.detailsHigh + 12
 	}
-	return clientHigh
+	return moreTop + w.moreHigh() + 16
+}
+
+// measure is the room a text takes in a box as wide as given, in the pixels of a screen at 100 %.
+func (w *window) measure(s string, wide int32) int32 {
+	if s == "" {
+		return 0
+	}
+	dc := call(user32, "GetDC", w.hwnd)
+	defer call(user32, "ReleaseDC", w.hwnd, dc)
+	before := call(gdi32, "SelectObject", dc, w.font)
+	defer call(gdi32, "SelectObject", dc, before)
+	box := rect{0, 0, w.px(wide), 0}
+	text, _ := syscall.UTF16FromString(s)
+	call(user32, "DrawTextW", dc, uintptr(unsafe.Pointer(&text[0])), uintptr(len(text)-1), uintptr(unsafe.Pointer(&box)),
+		0x0400|0x0010|0x2000|0x0800) // DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX, as paint writes it
+	return (box.bottom*96 + w.dpi - 1) / w.dpi
+}
+
+// fit gives the window the height of what it shows: the details grow and shrink with what they say. always: the
+// advanced settings or the details were just opened or closed.
+func (w *window) fit(always bool) {
+	high := int32(0)
+	if w.advanced && w.s.st.debug() {
+		high = min(w.measure(w.s.details(), clientWide-2*margin), maxDetails)
+	}
+	if high != w.detailsHigh || always {
+		w.detailsHigh = high
+		w.scale(w.dpi, nil)
+	}
+}
+
+// lineOf is the height of a line of the font, in the screen's pixels.
+func (w *window) lineOf(font uintptr) int32 {
+	dc := call(user32, "GetDC", w.hwnd)
+	defer call(user32, "ReleaseDC", w.hwnd, dc)
+	before := call(gdi32, "SelectObject", dc, font)
+	defer call(gdi32, "SelectObject", dc, before)
+	var metrics [64]byte // TEXTMETRICW, whose first field is the height
+	call(gdi32, "GetTextMetricsW", dc, uintptr(unsafe.Pointer(&metrics[0])))
+	return *(*int32)(unsafe.Pointer(&metrics[0]))
 }
 
 func (w *window) makeFont(points, weight int32) uintptr {
@@ -285,6 +366,13 @@ func (w *window) theme() {
 	if dark {
 		w.colours = darkColours
 	}
+	if w.fieldBrush != 0 {
+		call(gdi32, "DeleteObject", w.fieldBrush)
+	}
+	w.fieldBrush = call(gdi32, "CreateSolidBrush", colorref(w.colours.card))
+	if w.field != 0 {
+		call(user32, "InvalidateRect", w.field, 0, 1)
+	}
 	if has(dwmapi, "DwmSetWindowAttribute") {
 		on := int32(0)
 		if dark {
@@ -300,13 +388,23 @@ func (w *window) scale(dpi int32, place *rect) {
 	if dpi < 96 {
 		dpi = 96
 	}
-	for _, old := range []uintptr{w.font, w.bold} {
-		if old != 0 {
-			call(gdi32, "DeleteObject", old)
-		}
-	}
+	old := []uintptr{w.font, w.bold}
 	w.dpi = dpi
 	w.font, w.bold = w.makeFont(10, 400), w.makeFont(15, 600)
+	if w.field != 0 {
+		call(user32, "SendMessageW", w.field, 0x0030, w.font, 0) // WM_SETFONT, before the old font goes
+	}
+	for _, font := range old {
+		if font != 0 {
+			call(gdi32, "DeleteObject", font)
+		}
+	}
+	w.lineHigh = w.lineOf(w.font)
+	w.noteHigh = 0 // a word can go to another line at another scale
+	for _, key := range noteTexts {
+		w.noteHigh = max(w.noteHigh, w.measure(text(key), clientWide-2*inside))
+	}
+	w.noteHigh += 10
 	small, big := makeIcon(w.px(16)), makeIcon(w.px(32))
 	call(user32, "SendMessageW", w.hwnd, 0x0080, 0, small) // WM_SETICON, ICON_SMALL
 	call(user32, "SendMessageW", w.hwnd, 0x0080, 1, big)   // ICON_BIG
@@ -317,19 +415,47 @@ func (w *window) scale(dpi int32, place *rect) {
 	}
 	w.small, w.big = small, big
 	const noMove, noZOrder, noActivate = 0x0002, 0x0004, 0x0010
-	if place != nil { // where Windows suggests, on the new screen
-		call(user32, "SetWindowPos", w.hwnd, 0, uintptr(place.left), uintptr(place.top),
-			uintptr(place.right-place.left), uintptr(place.bottom-place.top), noZOrder|noActivate)
-	} else {
-		frame := rect{0, 0, w.px(clientWide), w.px(w.high())}
-		if !has(user32, "AdjustWindowRectExForDpi") ||
-			call(user32, "AdjustWindowRectExForDpi", uintptr(unsafe.Pointer(&frame)), windowStyle, 0, 0, uintptr(dpi)) == 0 {
-			call(user32, "AdjustWindowRectEx", uintptr(unsafe.Pointer(&frame)), windowStyle, 0, 0)
-		}
-		call(user32, "SetWindowPos", w.hwnd, 0, 0, 0, uintptr(frame.right-frame.left), uintptr(frame.bottom-frame.top),
-			noMove|noZOrder|noActivate)
+	frame := rect{0, 0, w.px(clientWide), w.px(w.high())}
+	if !has(user32, "AdjustWindowRectExForDpi") ||
+		call(user32, "AdjustWindowRectExForDpi", uintptr(unsafe.Pointer(&frame)), windowStyle, 0, 0, uintptr(dpi)) == 0 {
+		call(user32, "AdjustWindowRectEx", uintptr(unsafe.Pointer(&frame)), windowStyle, 0, 0)
 	}
+	moving, left, top := uintptr(noMove), int32(0), int32(0)
+	if place != nil { // where Windows suggests, on the new screen; the size is the window's own, as the note's may differ
+		moving, left, top = 0, place.left, place.top
+	}
+	call(user32, "SetWindowPos", w.hwnd, 0, uintptr(left), uintptr(top), uintptr(frame.right-frame.left),
+		uintptr(frame.bottom-frame.top), moving|noZOrder|noActivate)
+	w.placeField()
 	call(user32, "InvalidateRect", w.hwnd, 0, 0)
+}
+
+// placeField puts the address field in its box, or hides it with the advanced settings.
+func (w *window) placeField() {
+	if w.field == 0 {
+		return
+	}
+	if !w.advanced {
+		if call(user32, "GetFocus") == w.field {
+			call(user32, "SetFocus", w.hwnd)
+		}
+		call(user32, "ShowWindow", w.field, 0) // SW_HIDE
+		return
+	}
+	box := w.px(rowHigh - 10)
+	call(user32, "SetWindowPos", w.field, 0, uintptr(w.px(fieldLeft+10)), uintptr(w.px(moreTop+5)+(box-w.lineHigh)/2),
+		uintptr(w.px(fieldWide-20)), uintptr(w.lineHigh), 0x0004|0x0010|0x0040) // SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW
+}
+
+// fieldText is what the address field holds.
+func (w *window) fieldText() string {
+	buf := make([]uint16, call(user32, "GetWindowTextLengthW", w.field)+1)
+	call(user32, "GetWindowTextW", w.field, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf)
+}
+
+func (w *window) setFieldText(s string) {
+	call(user32, "SetWindowTextW", w.field, uintptr(unsafe.Pointer(utf16(s))))
 }
 
 func (w *window) create() bool {
@@ -373,6 +499,13 @@ func (w *window) create() bool {
 	if w.hwnd == 0 {
 		return false
 	}
+	// The address field: WS_CHILD | ES_AUTOHSCROLL, without a border, laid in a box the window draws. It shows with
+	// the advanced settings, empty for the RookieLedger site: what empty means is said below it, not inside it, where
+	// it would pass for an address already filled in.
+	w.address = w.s.st.customURL()
+	w.field = call(user32, "CreateWindowExW", 0, uintptr(unsafe.Pointer(utf16("EDIT"))), uintptr(unsafe.Pointer(utf16(w.address))),
+		0x40000000|0x0080, 0, 0, 0, 0, w.hwnd, fieldID, instance, 0)
+	call(user32, "SendMessageW", w.field, 0x00C5, 512, 0) // EM_LIMITTEXT
 	var dpi int32
 	if has(user32, "GetDpiForWindow") {
 		dpi = int32(call(user32, "GetDpiForWindow", w.hwnd))
@@ -394,7 +527,7 @@ func (w *window) tray(action uintptr) {
 	data.size = uint32(unsafe.Sizeof(data))
 	tip := appTitle
 	if v := w.s.view(); !v.Checked.IsZero() {
-		tip += ": " + text("server") + " " + text(map[bool]string{true: "up", false: "down"}[v.Up])
+		tip += ": " + text("server") + " " + text(siteState(v))
 	}
 	shown, _ := syscall.UTF16FromString(tip)
 	copy(data.tip[:len(data.tip)-1], shown)
@@ -412,28 +545,15 @@ func (w *window) toggle() {
 	call(user32, "SetForegroundWindow", w.hwnd)
 }
 
+// menu is the icon's: show or hide the window, and quit. The settings are in the window.
 func (w *window) menu() {
 	menu := call(user32, "CreatePopupMenu")
 	label := "showwindow"
 	if w.visible() {
 		label = "hidewindow"
 	}
-	checked := func(on bool) uintptr {
-		if on {
-			return 0x8 // MF_CHECKED
-		}
-		return 0
-	}
 	call(user32, "AppendMenuW", menu, 0, menuToggle, uintptr(unsafe.Pointer(utf16(text(label)))))
 	call(user32, "AppendMenuW", menu, 0x800, 0, 0) // MF_SEPARATOR
-	call(user32, "AppendMenuW", menu, 0, menuFolder, uintptr(unsafe.Pointer(utf16(text("choose")))))
-	if w.store {
-		call(user32, "AppendMenuW", menu, 0, menuAutostart, uintptr(unsafe.Pointer(utf16(text("startupsettings")))))
-	} else {
-		call(user32, "AppendMenuW", menu, checked(w.s.st.autostart()), menuAutostart, uintptr(unsafe.Pointer(utf16(text("autostart")))))
-	}
-	call(user32, "AppendMenuW", menu, checked(w.s.st.debug()), menuDebug, uintptr(unsafe.Pointer(utf16(text("debug")))))
-	call(user32, "AppendMenuW", menu, 0x800, 0, 0)
 	call(user32, "AppendMenuW", menu, 0, menuQuit, uintptr(unsafe.Pointer(utf16(text("quit")))))
 	var at point
 	call(user32, "GetCursorPos", uintptr(unsafe.Pointer(&at)))
@@ -444,8 +564,9 @@ func (w *window) menu() {
 	call(user32, "DestroyMenu", menu)
 }
 
-// shapes draws what has curves, with smooth edges: the card, the heading's picture and the status dot. Sizes are
-// in the screen's own pixels. GDI+ takes whole numbers through these calls, which is all that is needed here.
+// shapes draws what has curves, with smooth edges: the cards, the buttons, the switches, the heading's picture and
+// the status dot. Sizes are in the screen's own pixels. GDI+ takes whole numbers through these calls, which is all
+// that is needed here.
 func (w *window) shapes(dc uintptr, dot uint32) {
 	var g uintptr
 	if !has(gdiplus, "GdipCreateFromHDC") || call(gdiplus, "GdipCreateFromHDC", dc, uintptr(unsafe.Pointer(&g))) != 0 {
@@ -462,6 +583,11 @@ func (w *window) shapes(dc uintptr, dot uint32) {
 			call(gdiplus, "GdipDeleteBrush", brush)
 		}
 	}
+	disc := func(colour uint32, x, y, size int32) {
+		fill(colour, func(brush uintptr) {
+			call(gdiplus, "GdipFillEllipseI", g, brush, uintptr(x), uintptr(y), uintptr(size), uintptr(size))
+		})
+	}
 	// A rectangle with round corners is two rectangles laid across each other and a disc in each corner.
 	round := func(colour uint32, x, y, wide, high, r int32) {
 		fill(colour, func(brush uintptr) {
@@ -475,39 +601,87 @@ func (w *window) shapes(dc uintptr, dot uint32) {
 			}
 		})
 	}
-	x, y, wide, high, r := w.px(margin), w.px(cardTop), w.px(clientWide-2*margin), w.px(rows*rowHigh), w.px(8)
-	round(w.colours.edge, x, y, wide, high, r)
-	round(w.colours.card, x+1, y+1, wide-2, high-2, r-1)
-	// The button and the drop-down list, as Windows 11 draws plain ones: the card's colours, a shade darker under
-	// the pointer.
+	card := func(top, high int32) {
+		x, y, wide, high, r := w.px(margin), w.px(top), w.px(clientWide-2*margin), w.px(high), w.px(8)
+		round(w.colours.edge, x, y, wide, high, r)
+		round(w.colours.card, x+1, y+1, wide-2, high-2, r-1)
+	}
+	// A button, the drop-down list or the address field, as Windows 11 draws plain ones: the card's colours, a shade
+	// darker under the pointer (which = 0: never).
 	plain := func(which int, left, top, wide, high int32) {
 		face := w.colours.card
-		if w.hover == which {
+		if which != 0 && w.hover == which {
 			face = w.colours.rule
 		}
 		round(w.colours.edge, w.px(left), w.px(top), w.px(wide), w.px(high), w.px(5))
 		round(face, w.px(left)+1, w.px(top)+1, w.px(wide)-2, w.px(high)-2, w.px(5)-1)
 	}
-	plain(onFolder, margin, buttonTop, buttonWide, buttonHigh)
-	plain(onList, column, listTop, listWide, listHigh)
-	// The list's arrow: two strokes that meet below.
-	var pen uintptr
-	if call(gdiplus, "GdipCreatePen1", argb(w.colours.dim), uintptr(math.Float32bits(float32(w.px(3))/2)), 2, // in pixels
-		uintptr(unsafe.Pointer(&pen))) == 0 {
-		tip := point{w.px(column + listWide - 18), w.px(listTop+listHigh/2) + w.px(2)}
+	// An arrow of two strokes that meet at the tip, below it or (up) above it, in the screen's pixels.
+	arrow := func(tip point, up bool) {
+		var pen uintptr
+		if call(gdiplus, "GdipCreatePen1", argb(w.colours.dim), uintptr(math.Float32bits(float32(w.px(3))/2)), 2, // in pixels
+			uintptr(unsafe.Pointer(&pen))) != 0 {
+			return
+		}
+		rise := w.px(4)
+		if up {
+			rise = -rise
+		}
 		for _, side := range []int32{-1, 1} {
-			call(gdiplus, "GdipDrawLineI", g, pen, uintptr(tip.x+side*w.px(4)), uintptr(tip.y-w.px(4)), uintptr(tip.x), uintptr(tip.y))
+			call(gdiplus, "GdipDrawLineI", g, pen, uintptr(tip.x+side*w.px(4)), uintptr(tip.y-rise), uintptr(tip.x), uintptr(tip.y))
 		}
 		call(gdiplus, "GdipDeletePen", pen)
+	}
+	// A switch at the right of a row: a filled pill with its knob at the right when on, an outline with its knob at
+	// the left when off.
+	toggle := func(on bool, top int32) {
+		x, y, wide, high, knob := w.px(switchLeft), w.px(top+(rowHigh-switchHigh)/2), w.px(switchWide), w.px(switchHigh), w.px(12)
+		if on {
+			round(w.colours.accent, x, y, wide, high, high/2)
+			disc(w.colours.knob, x+wide-high/2-knob/2, y+(high-knob)/2, knob)
+			return
+		}
+		round(w.colours.dim, x, y, wide, high, high/2)
+		round(w.colours.card, x+1, y+1, wide-2, high-2, high/2-1)
+		disc(w.colours.dim, x+high/2-knob/2, y+(high-knob)/2, knob)
+	}
+
+	card(cardTop, rows*rowHigh)
+	plain(onFolder, margin, buttonTop, buttonWide, buttonHigh)
+	plain(onMore, moreLeft, buttonTop, moreWide, buttonHigh)
+	tip := point{w.px(moreLeft + moreWide - 18), w.px(buttonTop+buttonHigh/2) + w.px(2)}
+	if w.advanced {
+		tip.y -= w.px(4)
+	}
+	arrow(tip, w.advanced)
+	plain(onList, column, listTop, listWide, listHigh)
+	arrow(point{w.px(column + listWide - 18), w.px(listTop+listHigh/2) + w.px(2)}, false)
+	if w.store {
+		plain(onStart, clientWide-inside-startWide, startTop+5, startWide, listHigh)
+	} else {
+		toggle(w.s.st.autostart(), startTop)
+	}
+	if w.advanced {
+		card(moreTop, w.moreHigh())
+		plain(0, fieldLeft, moreTop+5, fieldWide, rowHigh-10)
+		// Windows 11 marks the field typed in with a line of its colour; the field the note finds fault with, in red.
+		line := uint32(0)
+		if _, problem := w.note(); problem {
+			line = w.colours.down
+		} else if call(user32, "GetFocus") == w.field {
+			line = w.colours.accent
+		}
+		if line != 0 {
+			round(line, w.px(fieldLeft)+1, w.px(moreTop+rowHigh-5)-w.px(2), w.px(fieldWide)-2, w.px(2), 0)
+		}
+		plain(onSave, saveLeft, moreTop+5, saveWide, rowHigh-10)
+		toggle(w.s.st.debug(), w.debugTop())
 	}
 	if w.picture != 0 {
 		call(gdiplus, "GdipDrawImageRectI", g, w.picture, uintptr(w.px(margin)), uintptr(w.px(22)), uintptr(w.px(44)), uintptr(w.px(44)))
 	}
-	fill(dot, func(brush uintptr) {
-		size := w.px(10)
-		call(gdiplus, "GdipFillEllipseI", g, brush, uintptr(w.px(column)), uintptr(w.px(cardTop)+(w.px(rowHigh)-size)/2),
-			uintptr(size), uintptr(size))
-	})
+	size := w.px(10)
+	disc(dot, w.px(column), w.px(cardTop)+(w.px(rowHigh)-size)/2, size)
 }
 
 func (w *window) paint() {
@@ -535,12 +709,14 @@ func (w *window) paint() {
 
 	v := w.s.view()
 	state, dot := text("checking"), w.colours.idle
-	if !v.Checked.IsZero() {
-		state, dot = text("down"), w.colours.down
-		if v.Up {
-			state, dot = text("up"), w.colours.up
+	if !v.Checked.IsZero() && !w.s.pointing() {
+		state, dot = text(siteState(v)), w.colours.down
+		if !v.Wrong { // that one says enough, and is long
+			state += " (" + v.Checked.Format("15:04") + ")"
 		}
-		state += " (" + v.Checked.Format("15:04") + ")"
+		if v.Up {
+			dot = w.colours.up
+		}
 	}
 	w.shapes(dc, dot)
 
@@ -548,6 +724,8 @@ func (w *window) paint() {
 	const (
 		single = 0x0020 | 0x8000 // DT_SINGLELINE | DT_END_ELLIPSIS
 		middle = single | 0x0004 // DT_VCENTER
+		centre = middle | 0x0001 // DT_CENTER
+		right  = middle | 0x0002 // DT_RIGHT
 	)
 	write := func(s string, font uintptr, colour uint32, x, y, wide, high int32, flags uintptr) {
 		call(gdi32, "SelectObject", dc, font)
@@ -557,6 +735,14 @@ func (w *window) paint() {
 		call(user32, "DrawTextW", dc, uintptr(unsafe.Pointer(&text[0])), uintptr(len(text)-1),
 			uintptr(unsafe.Pointer(&box)), flags|0x0800) // DT_NOPREFIX
 	}
+	rule := func(top int32) {
+		block(w.colours.rule, rect{w.px(inside), w.px(top), w.px(clientWide - inside), w.px(top) + 1})
+	}
+	// A row whose value is a switch: its name, then On or Off before the switch.
+	switchRow := func(name string, on bool, top int32) {
+		write(name, w.font, w.colours.dim, inside, top, stateLeft-inside-8, rowHigh, middle)
+		write(text(map[bool]string{true: "on", false: "off"}[on]), w.font, w.colours.ink, stateLeft, top, stateWide, rowHigh, right)
+	}
 	const heading = margin + 44 + 14 // beside the picture
 	write(appTitle, w.bold, w.colours.ink, heading, 20, clientWide-margin-heading, 28, middle)
 	write(version, w.font, w.colours.dim, heading, 48, clientWide-margin-heading, 20, middle)
@@ -565,43 +751,79 @@ func (w *window) paint() {
 	if !v.LastSync.IsZero() {
 		last = v.LastSync.Local().Format(text("date"))
 	}
-	data, foot := "…", text("installed")
-	if !w.store && !w.s.st.autostart() {
-		foot = text("manual")
-	}
+	data, foot := "…", text("uploads")
 	switch {
 	case v.Files == 0:
 		data, foot = text("nodata"), text("hint")
 	case v.Files > 0:
 		data = fmt.Sprintf(text("accounts"), v.Files)
 	}
-	for i, row := range [rows][2]string{{text("server"), state}, {text("lastsync"), last}, {text("gamedata"), data},
+	for i, row := range [rows - 1][2]string{{text("server"), state}, {text("lastsync"), last}, {text("gamedata"), data},
 		{text("checkevery"), pollLabel(w.s.st.pollMinutes())}} {
 		top := int32(cardTop + i*rowHigh)
 		if i > 0 {
-			block(w.colours.rule, rect{w.px(inside), w.px(top), w.px(clientWide - inside), w.px(top) + 1})
+			rule(top)
 		}
 		value, wide := int32(column), int32(clientWide-inside-column)
 		switch i {
 		case 0:
 			value, wide = value+18, wide-18 // after the dot
-		case rows - 1:
+		case rows - 2:
 			value, wide = value+12, wide-12-30 // inside the list, before its arrow
 		}
 		write(row[0], w.font, w.colours.dim, inside, top, column-inside-8, rowHigh, middle)
 		write(row[1], w.font, w.colours.ink, value, top, wide, rowHigh, middle)
 	}
-	write(text("choose"), w.font, w.colours.ink, margin, buttonTop, buttonWide, buttonHigh, middle|0x0001) // DT_CENTER
-	write(foot, w.font, w.colours.dim, margin, footTop, clientWide-2*margin, 44, 0x0010)                   // DT_WORDBREAK
-	if w.s.st.debug() {
-		block(w.colours.rule, rect{w.px(margin), w.px(clientHigh), w.px(clientWide - margin), w.px(clientHigh) + 1})
+	rule(startTop)
+	if w.store {
+		write(text("autostart"), w.font, w.colours.dim, inside, startTop, clientWide-inside-startWide-inside-8, rowHigh, middle)
+		write(text("opensettings"), w.font, w.colours.ink, clientWide-inside-startWide, startTop+5, startWide, listHigh, centre)
+	} else {
+		switchRow(text("autostart"), w.s.st.autostart(), startTop)
+	}
+	write(text("choose"), w.font, w.colours.ink, margin, buttonTop, buttonWide, buttonHigh, centre)
+	write(text("advanced"), w.font, w.colours.ink, moreLeft+8, buttonTop, moreWide-8-28, buttonHigh, centre)
+	write(foot, w.font, w.colours.dim, margin, footTop, clientWide-2*margin, footHigh, 0x0010) // DT_WORDBREAK
+	if !w.advanced {
+		return
+	}
+	write(text("address"), w.font, w.colours.dim, inside, moreTop, fieldLeft-inside-8, rowHigh, middle)
+	write(text("save"), w.font, w.colours.ink, saveLeft, moreTop+5, saveWide, rowHigh-10, centre)
+	note, problem := w.note()
+	colour := w.colours.dim
+	if problem {
+		colour = w.colours.down
+	}
+	write(note, w.font, colour, inside, noteTop, clientWide-2*inside, w.noteHigh, 0x0010|0x2000) // as measured
+	rule(w.debugTop())
+	switchRow(text("debug"), w.s.st.debug(), w.debugTop())
+	rule(w.logTop())
+	logPath := w.s.logPath
+	if logPath == "" {
+		logPath = "–"
+	}
+	write(text("log"), w.font, w.colours.dim, inside, w.logTop(), fieldLeft-inside-8, rowHigh, middle)
+	write(logPath, w.font, w.colours.ink, fieldLeft, w.logTop(), clientWide-inside-fieldLeft, rowHigh,
+		middle&^0x8000|0x4000) // DT_PATH_ELLIPSIS: the file's name stays in sight
+	if w.detailsHigh > 0 {
 		// DT_WORDBREAK | DT_EDITCONTROL: a folder's path has no space to break at, and is broken where the line ends.
-		write(w.s.details(), w.font, w.colours.dim, margin, clientHigh+12, clientWide-2*margin, debugHigh-24, 0x0010|0x2000)
+		write(w.s.details(), w.font, w.colours.dim, margin, w.detailsTop(), clientWide-2*margin, w.detailsHigh, 0x0010|0x2000)
 	}
 }
 
-// under tells what a mouse message's place (its lParam) is on: the button (onFolder), the drop-down list (onList),
-// or neither (0).
+// siteState is what the window says of the site once asked: the key of its text.
+func siteState(v view) string {
+	switch {
+	case v.Up:
+		return "up"
+	case v.Wrong:
+		return "wrongsite"
+	}
+	return "down"
+}
+
+// under tells what a mouse message's place (its lParam) is on: a button, the drop-down list, a switch (with its On
+// or Off), the address field's box (onField), or nothing (0).
 func (w *window) under(lParam uintptr) int {
 	x, y := int32(int16(lParam&0xffff)), int32(int16(lParam>>16&0xffff))
 	within := func(left, top, wide, high int32) bool {
@@ -610,13 +832,26 @@ func (w *window) under(lParam uintptr) int {
 	switch {
 	case within(margin, buttonTop, buttonWide, buttonHigh):
 		return onFolder
+	case within(moreLeft, buttonTop, moreWide, buttonHigh):
+		return onMore
 	case within(column, listTop, listWide, listHigh):
 		return onList
+	case w.store && within(clientWide-inside-startWide, startTop+5, startWide, listHigh),
+		!w.store && within(stateLeft, startTop, clientWide-inside-stateLeft, rowHigh):
+		return onStart
+	case !w.advanced:
+		return 0
+	case within(fieldLeft, moreTop+5, fieldWide, rowHigh-10):
+		return onField
+	case within(saveLeft, moreTop+5, saveWide, rowHigh-10):
+		return onSave
+	case within(stateLeft, w.debugTop(), clientWide-inside-stateLeft, rowHigh):
+		return onDebug
 	}
 	return 0
 }
 
-// pointer follows the mouse over the window: the button or the list shows that it is under it.
+// pointer follows the mouse over the window: a button or the list shows that it is under it.
 func (w *window) pointer(over int) {
 	if over == w.hover {
 		return
@@ -671,10 +906,7 @@ func (w *window) choosePoll() {
 // watching loop look there at once. It is what --wow-dir does, for who never opens a terminal.
 func (w *window) chooseFolder() {
 	if w.choosing {
-		return // the icon's menu still answers while the dialog is open: one dialog is enough
-	}
-	if !w.visible() {
-		w.toggle() // asked from the icon's menu: the dialog belongs to a window that shows
+		return // one dialog at a time
 	}
 	w.choosing = true
 	picked, ok := pickFolder(w.hwnd, text("choosetitle"))
@@ -784,7 +1016,8 @@ func pickFolder(owner uintptr, title string) (string, bool) {
 	return syscall.UTF16ToString(path), true
 }
 
-// setAutostart is the menu's first setting. For the Store package, Windows holds the switch: its page is opened.
+// setAutostart is the switch of the card's last row. For the Store package, Windows holds the switch: the row's
+// button opens its page.
 func (w *window) setAutostart() {
 	if w.store {
 		openStartupSettings()
@@ -800,12 +1033,83 @@ func (w *window) setAutostart() {
 	call(user32, "InvalidateRect", w.hwnd, 0, 0)
 }
 
-// setDebug is the menu's second setting: the window grows by the details, or gives them up.
+// setDebug is the switch of the advanced settings: the window grows by the details, or gives them up, and the log
+// holds them or not.
 func (w *window) setDebug() {
 	st := w.s.st
 	st.change(func() { st.Debug = !st.Debug })
 	w.s.save()
-	w.scale(w.dpi, nil)
+	w.fit(true)
+}
+
+// openAdvanced opens or closes the advanced settings. Closed, the field drops what was typed in it and not saved.
+func (w *window) openAdvanced() {
+	w.advanced = !w.advanced
+	if !w.advanced {
+		w.setFieldText(w.address)
+		w.fieldError = ""
+	}
+	w.fit(true)
+}
+
+// typeAddress puts the caret in the address field: a click on its box beside the field itself.
+func (w *window) typeAddress() { call(user32, "SetFocus", w.field) }
+
+// saveAddress takes the address typed in the field, with Enter or the Save button: the watching loop uploads there
+// from its next pass, which comes at once, and the note below the field says how the address answers. An address
+// it does not take is said there, beside it, and left in the field to be put right. Empty is the RookieLedger site.
+func (w *window) saveAddress() {
+	address, err := siteAddress(w.fieldText())
+	if err != nil {
+		w.fieldError = text("needhttps")
+		call(user32, "InvalidateRect", w.hwnd, 0, 0)
+		return
+	}
+	w.setFieldText(address)
+	w.fieldError = ""
+	if address != w.address {
+		w.address = address
+		w.s.point(address)
+	}
+	call(user32, "SetFocus", w.hwnd)
+	call(user32, "InvalidateRect", w.hwnd, 0, 0)
+}
+
+// note is what the window says below the address field, and whether it is a problem: why what was typed was not
+// taken, how the address saved answers, or, for the RookieLedger site, what an empty field means.
+func (w *window) note() (string, bool) {
+	v := w.s.view()
+	switch {
+	case w.fieldError != "":
+		return w.fieldError, true
+	case w.address == "":
+		return text("addresshelp"), false
+	case v.Checked.IsZero() || w.s.pointing(): // until the loop takes it, the view still holds the old address's answer
+		return text("addresschecking"), false
+	case v.Up:
+		return text("addressok"), false
+	case v.Wrong:
+		return text("addresswrong"), true
+	}
+	return text("addressdown"), true
+}
+
+// key takes the keys the address field gives no meaning to: Enter saves, Escape puts back the address saved, and
+// Ctrl+A selects all. It tells whether the key was taken.
+func (w *window) key(code uintptr) bool {
+	switch {
+	case code == 0x0D: // VK_RETURN
+		w.saveAddress()
+	case code == 0x1B: // VK_ESCAPE
+		w.setFieldText(w.address)
+		w.fieldError = ""
+		call(user32, "SetFocus", w.hwnd)
+	case code == 'A' && int16(call(user32, "GetKeyState", 0x11)) < 0: // VK_CONTROL held
+		call(user32, "SendMessageW", w.field, 0x00B1, 0, ^uintptr(0)) // EM_SETSEL, all of it
+	default:
+		return false
+	}
+	return true
 }
 
 func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
@@ -828,18 +1132,31 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			w.menu()
 		}
 	case wmCommand:
+		if lParam != 0 && lParam == w.field {
+			switch wParam >> 16 & 0xffff {
+			case 0x0100, 0x0200: // EN_SETFOCUS, EN_KILLFOCUS: the line below the field shows the focus
+				call(user32, "InvalidateRect", hwnd, 0, 0)
+			case 0x0300: // EN_CHANGE: what is typed anew is judged when it is saved
+				if w.fieldError != "" && call(user32, "GetFocus") == w.field {
+					w.fieldError = ""
+					call(user32, "InvalidateRect", hwnd, 0, 0)
+				}
+			}
+			break
+		}
 		switch wParam & 0xffff {
 		case menuToggle:
 			w.toggle()
 		case menuQuit:
 			call(user32, "DestroyWindow", hwnd)
-		case menuAutostart:
-			w.setAutostart()
-		case menuDebug:
-			w.setDebug()
-		case menuFolder:
-			w.chooseFolder()
 		}
+	case wmEditBg:
+		if lParam != w.field {
+			return call(user32, "DefWindowProcW", hwnd, uintptr(message), wParam, lParam)
+		}
+		call(gdi32, "SetTextColor", wParam, colorref(w.colours.ink))
+		call(gdi32, "SetBkColor", wParam, colorref(w.colours.card))
+		return w.fieldBrush
 	case wmMove:
 		w.pointer(w.under(lParam))
 	case wmLeave:
@@ -847,6 +1164,10 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		w.pressed = 0
 	case wmLDown:
 		w.pressed = w.under(lParam)
+		// A click elsewhere leaves the address field, as in every window; what was typed stays until saved.
+		if w.pressed != onField && w.pressed != onSave && call(user32, "GetFocus") == w.field {
+			call(user32, "SetFocus", hwnd)
+		}
 	case wmLButton:
 		// A click is the button going down and coming up on the same thing: a button that comes up here after it
 		// went down elsewhere (a drag let go of, the click that closed a menu or started the program) is none.
@@ -860,15 +1181,30 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			w.chooseFolder()
 		case onList:
 			w.choosePoll()
+		case onStart:
+			w.setAutostart()
+		case onMore:
+			w.openAdvanced()
+		case onField:
+			w.typeAddress()
+		case onSave:
+			w.saveAddress()
+		case onDebug:
+			w.setDebug()
 		}
 	case wmCursor:
 		if w.hover == 0 || lParam&0xffff != 1 { // HTCLIENT: the pointer is inside the window, not on its frame
 			return call(user32, "DefWindowProcW", hwnd, uintptr(message), wParam, lParam)
 		}
-		call(user32, "SetCursor", call(user32, "LoadCursorW", 0, 32649)) // IDC_HAND
+		cursor := uintptr(32649) // IDC_HAND
+		if w.hover == onField {
+			cursor = 32513 // IDC_IBEAM
+		}
+		call(user32, "SetCursor", call(user32, "LoadCursorW", 0, cursor))
 		return 1
 	case msgChange:
 		w.tray(1) // NIM_MODIFY
+		w.fit(false)
 		call(user32, "InvalidateRect", hwnd, 0, 0)
 	case wmSetting:
 		w.theme()
@@ -909,6 +1245,11 @@ func serve(s *syncer, show bool, watch func()) {
 	go watch()
 	var m msg
 	for int32(call(user32, "GetMessageW", uintptr(unsafe.Pointer(&m)), 0, 0, 0)) > 0 {
+		// Enter and Escape in the address field are the window's: taken before they become characters, which a field
+		// of one line answers with a beep.
+		if m.hwnd == w.field && m.message == wmKeyDown && w.key(m.wParam) {
+			continue
+		}
 		call(user32, "TranslateMessage", uintptr(unsafe.Pointer(&m)))
 		call(user32, "DispatchMessageW", uintptr(unsafe.Pointer(&m)))
 	}

@@ -24,6 +24,9 @@ import (
 // The Run key only starts the program at the next logon, so the installing process keeps running.
 const installHandsOver = false
 
+// noFolderText is the key of the text that says the game was not found: here the window's button points to it.
+const noFolderText = "dnofolder"
+
 const (
 	runKey    = `Software\Microsoft\Windows\CurrentVersion\Run` // under HKEY_CURRENT_USER
 	runValue  = "RookieLedgerSync"
@@ -326,7 +329,8 @@ func packaged() bool {
 // settle makes this process the one copy that runs for this user, started from the installed place. It returns
 // false when another process is that copy: the installed one it just started, or one that already runs. With
 // renewed, the start brought a setting (--url, --wow-dir): a copy that already runs is asked to leave, since it
-// read its settings when it started.
+// read its settings when it started, and the caller takes the setting once it has. One that stays keeps the setting
+// out, and the person is told.
 func settle(dir string, st *state, renewed bool) (release func(), proceed bool) {
 	self, selfErr := os.Executable()
 	target, targetErr := installedExe()
@@ -351,7 +355,10 @@ func settle(dir string, st *state, renewed bool) (release func(), proceed bool) 
 		}
 	}
 	if running {
-		if !showRunning() {
+		switch {
+		case renewed: // it did not leave: the settings given wait for it to be quit
+			notify(text("notrenewed"))
+		case !showRunning():
 			notify(text("running") + "\n\n" + describe(st))
 		}
 		return nil, false

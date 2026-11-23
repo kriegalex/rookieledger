@@ -10,11 +10,13 @@
 //	rookieledger-sync --once      one pass, then exit
 //	  --wow-dir DIR   the "World of Warcraft" folder, when it is not found by itself (remembered; on Windows the
 //	                  window's button asks for it)
-//	  --url URL       the upload address (remembered; "default" goes back to the RookieLedger site)
+//	  --url URL       the upload address (remembered; "default" goes back to the RookieLedger site; on Windows the
+//	                  window's advanced settings hold it too). Read as the window reads it: see siteAddress
 //	  --background    Windows: start without opening the window (how the session starts it)
 //
-// On Windows the menu of its icon holds two settings: whether it starts with the session (it does unless switched
-// off) and whether its window also says why the site or the game's data is not found.
+// On Windows the window holds the settings: whether the program starts with the session (it does unless switched
+// off), and, among the advanced ones, the upload address and whether the window also says why the site or the
+// game's data is not found.
 package main
 
 import (
@@ -31,6 +33,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,7 +74,7 @@ type state struct {
 	Files     map[string]fileState `json:"files,omitempty"`
 	Installed bool                 `json:"installed,omitempty"`
 	LastSync  time.Time            `json:"last_sync,omitzero"` // when the site last accepted a file
-	// The two settings of the Windows window's menu. Each is written as what the person switched away from the
+	// Two settings of the Windows window. Each is written as what the person switched away from the
 	// default, so that a state file of before them, or without them, means the default.
 	NoAutostart bool `json:"no_autostart,omitempty"` // do not start with the session
 	Debug       bool `json:"debug,omitempty"`        // the window also says why something is wrong
@@ -155,21 +158,92 @@ func (st *state) debug() bool {
 	return st.Debug
 }
 
-// uploadURL is where this installation uploads: the address given once with --url, else the RookieLedger site.
+// uploadURL is where this installation uploads: the address given with --url or in the window, else the
+// RookieLedger site.
 func (st *state) uploadURL() string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	if st.URL != "" {
 		return st.URL
 	}
 	return defaultURL
 }
 
-// setURL remembers the address given with --url; "default" goes back to the built-in one.
-func (st *state) setURL(given string) {
+// customURL is the address given, empty for the RookieLedger site: what the window's field shows.
+func (st *state) customURL() string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.URL
+}
+
+// setURL remembers the address given with --url or in the window; "default", or the RookieLedger site's own address,
+// goes back to the built-in one. Another site has none of the files yet: they are all sent to it, and nothing was
+// sent to it yet. It tells whether the address changed.
+func (st *state) setURL(given string) bool {
 	given = strings.TrimRight(strings.TrimSpace(given), "/")
-	if given == "default" {
+	if given == "default" || given == defaultURL {
 		given = ""
 	}
-	st.URL = given
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if given == st.URL {
+		return false
+	}
+	st.URL, st.Files, st.LastSync = given, map[string]fileState{}, time.Time{}
+	return true
+}
+
+// errNotSite is the answer to an address, typed in the window or given with --url, that siteAddress does not take.
+var errNotSite = errors.New("not a site's address")
+
+// siteAddress reads an address typed in the window's field or given with --url. Empty is the RookieLedger site, given
+// back as "", as is that site's own address. A name without a scheme is taken as https, and an address without a path
+// is given the upload path, so that "example.org" is enough. Only https is taken, since the token goes with every
+// request; plain http only for a site on this computer, which a network never sees.
+func siteAddress(typed string) (string, error) {
+	typed = strings.TrimSpace(typed)
+	if typed == "" || typed == "default" {
+		return "", nil
+	}
+	if !strings.Contains(typed, "://") {
+		typed = "https://" + typed
+	}
+	u, err := url.Parse(typed)
+	if err != nil || u.Scheme != "https" && (u.Scheme != "http" || !onThisComputer(u.Hostname())) || u.Hostname() == "" ||
+		u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(u.Host, " \t") {
+		return "", errNotSite
+	}
+	// A name is the same in capitals: the RookieLedger site typed so is still that site.
+	u.Host, u.Path, u.RawPath = strings.ToLower(u.Host), strings.TrimRight(u.Path, "/"), ""
+	if u.Path == "" {
+		u.Path = "/v1/ledger"
+	}
+	if address := u.String(); address != defaultURL {
+		return address, nil
+	}
+	return "", nil
+}
+
+// onThisComputer tells whether a host name is this computer's own (localhost, 127.0.0.1, ::1): what is sent to it
+// never crosses a network.
+func onThisComputer(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// checkRedirect follows a site's redirects by siteAddress's rule: the token goes along, so never to plain http away
+// from this computer.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if req.URL.Scheme != "https" && !onThisComputer(req.URL.Hostname()) {
+		return errors.New("redirected to " + req.URL.Scheme + " away from this computer")
+	}
+	return nil
 }
 
 type tokenStatus struct {
@@ -184,6 +258,7 @@ type view struct {
 	Up       bool      // what that answer was
 	Files    int       // saved files found; -1 before the first look
 	Problem  string    // why the site did not answer the last time it was asked; empty when it did
+	Wrong    bool      // the address answers, but not as a RookieLedger site: mistyped, or another server's
 	Waiting  bool      // the site does not accept a token yet
 	Game     string    // what was found of the game on this computer, a line per thing (see gameDetails)
 }
@@ -204,8 +279,9 @@ type syncer struct {
 	logged     string        // the details last written to the log
 	candidates []string      // where the game could be, as last searched for while it is not found
 	searched   time.Time     // when that was; zero: to be searched for again
-	mu         sync.Mutex    // guards shown
+	mu         sync.Mutex    // guards shown and next
 	shown      view
+	next       *string // the address the window gave, for the watching loop to take before its next pass
 }
 
 func (s *syncer) view() view {
@@ -235,6 +311,48 @@ func (s *syncer) look(search bool) {
 	case s.wake <- struct{}{}:
 	default: // already asked, or nobody watches
 	}
+}
+
+// point has the watching loop upload to another address, given in the window ("" for the RookieLedger site), from
+// a pass that comes at once.
+func (s *syncer) point(address string) {
+	s.mu.Lock()
+	s.next = &address
+	s.mu.Unlock()
+	s.look(false)
+}
+
+// pointing tells whether an address the window gave waits for the watching loop to take it: until then, what the
+// view says of the site is the old address's answer.
+func (s *syncer) pointing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.next != nil
+}
+
+// follow takes the address the window gave, between two passes, so that no upload to the old one is under way: the
+// new site is asked about each token anew and sent every file.
+func (s *syncer) follow() {
+	s.mu.Lock()
+	next := s.next
+	s.next = nil
+	s.mu.Unlock()
+	if next == nil {
+		return
+	}
+	if !s.st.setURL(*next) {
+		// The address in use again: the window, which said it was checking, shows the last answer once more.
+		if s.changed != nil {
+			s.changed()
+		}
+		return
+	}
+	s.url, s.tokens = s.st.uploadURL(), map[string]*tokenStatus{}
+	s.save()
+	s.show(func(v *view) {
+		v.LastSync, v.Checked, v.Up, v.Problem, v.Wrong, v.Waiting = time.Time{}, time.Time{}, false, "", false, false
+	})
+	log.Printf("uploading to %s from now on", s.url)
 }
 
 // wait is how long the watching loop sleeps before its next pass: what the person chose, and no longer than
@@ -451,7 +569,7 @@ func gameDetails(found, candidates, given []string) string {
 		lines = append(lines, line)
 	}
 	if len(found) == 0 {
-		lines = append(lines, text("dnofolder"))
+		lines = append(lines, text(noFolderText))
 		seen := map[string]bool{}
 		for _, c := range candidates {
 			matches, _ := filepath.Glob(c)
@@ -501,11 +619,12 @@ func explain(err error) string {
 	return text(why) + " (" + raw + ")"
 }
 
-// details is what the window shows below its card and its button when the debug setting is on: where it uploads
-// to and why that failed, whether a token waits, what was found of the game, and where the log is.
+// details is what the window shows below its advanced settings when the debug setting is on: why the site was not
+// reached, whether a token waits, and what was found of the game. The address and the log's place are settings of
+// their own there; the log says the address when the program starts and when it changes.
 func (s *syncer) details() string {
 	v := s.view()
-	lines := []string{text("daddress") + s.url}
+	var lines []string
 	if v.Problem != "" {
 		lines = append(lines, v.Problem)
 	}
@@ -514,9 +633,6 @@ func (s *syncer) details() string {
 	}
 	if v.Game != "" {
 		lines = append(lines, v.Game)
-	}
-	if s.logPath != "" {
-		lines = append(lines, text("dlog")+s.logPath)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -549,20 +665,35 @@ func (s *syncer) request(method, path, token string, body []byte) (int, string, 
 		req.Header.Set("Content-Encoding", "gzip")
 	}
 	resp, err := s.client.Do(req)
-	// A gateway's 502 or 503 is an answer, but not the site's: it is down behind its front door.
-	problem := ""
-	if err != nil {
+	// A gateway's 502 or 503 is an answer, but not the site's: it is down behind its front door. Any web server
+	// answers too: what it says to the status question tells whether it is a RookieLedger site.
+	problem, wrong := "", false
+	switch {
+	case err != nil:
 		problem = explain(err)
-	} else if resp.StatusCode >= 500 {
+	case resp.StatusCode >= 500:
 		problem = fmt.Sprintf(text("sitedown"), resp.StatusCode)
+	case path == "status" && !ledgerAnswer(resp.StatusCode):
+		if s.url == defaultURL { // not the person's mistake: the RookieLedger site is down behind its front door
+			problem = fmt.Sprintf(text("sitedown"), resp.StatusCode)
+		} else {
+			problem, wrong = fmt.Sprintf(text("notledger"), resp.StatusCode), true
+		}
 	}
-	s.show(func(v *view) { v.Checked, v.Up, v.Problem = s.now(), problem == "", problem })
+	s.show(func(v *view) { v.Checked, v.Up, v.Problem, v.Wrong = s.now(), problem == "", problem, wrong })
 	if err != nil {
 		return 0, "", err
 	}
 	defer resp.Body.Close()
 	text, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return resp.StatusCode, strings.TrimSpace(string(text)), nil
+}
+
+// ledgerAnswer tells whether an answer to the status question is one a RookieLedger site gives: the token is known
+// (204), it is not or there is none (401), or the question came too often (429). Any other server answers otherwise,
+// most often 404.
+func ledgerAnswer(code int) bool {
+	return code == http.StatusNoContent || code == http.StatusUnauthorized || code == http.StatusTooManyRequests
 }
 
 // registered tells whether the site knows the token, asking it at most every recheckEvery while the answer is no.
@@ -647,6 +778,7 @@ func (s *syncer) syncFile(path string) {
 }
 
 func (s *syncer) pass(roots []string) int {
+	s.follow()
 	files := findSavedFiles(roots)
 	for _, f := range files {
 		s.syncFile(f)
@@ -743,26 +875,41 @@ func describe(st *state) string {
 
 func main() {
 	wowDir := flag.String("wow-dir", "", `the "World of Warcraft" folder`)
-	url := flag.String("url", "", `upload address, remembered ("default": the RookieLedger site)`)
+	url := flag.String("url", "", `upload address, remembered ("default": the RookieLedger site; "example.org" is enough)`)
 	once := flag.Bool("once", false, "one pass, then exit")
 	install := flag.Bool("install", false, "start with the session, then watch")
 	uninstall := flag.Bool("uninstall", false, "remove the autostart")
 	status := flag.Bool("status", false, "print the files found and their tokens")
 	background := flag.Bool("background", false, "Windows: start without opening the window")
 	flag.Parse()
+	// Read as the window's field reads it, before anything else: refused, it must not make a running copy quit.
+	address, err := siteAddress(*url)
+	if err != nil {
+		notify(fmt.Sprintf(text("badurl"), *url))
+		os.Exit(2)
+	}
 
 	dir := configDir()
 	_ = os.MkdirAll(dir, 0o700)
 	statePath := filepath.Join(dir, "state.json")
 	st := loadState(statePath)
-	if *wowDir != "" {
-		abs, _ := filepath.Abs(*wowDir)
-		st.WowDirs = []string{abs}
-		saveState(statePath, st)
+	renewed := *wowDir != "" || *url != ""
+	// take writes down the settings given (--wow-dir, --url). The program that goes on watching takes them once it is
+	// the one copy that runs (settle): taken before, the copy that ran until then could write its state over them.
+	take := func(st *state) {
+		if *wowDir != "" {
+			abs, _ := filepath.Abs(*wowDir)
+			st.change(func() { st.WowDirs = []string{abs} })
+		}
+		if *url != "" {
+			st.setURL(address) // "" for the RookieLedger site
+		}
+		if renewed {
+			saveState(statePath, st)
+		}
 	}
-	if *url != "" {
-		st.setURL(*url)
-		saveState(statePath, st)
+	if *status || *uninstall || *once || *install && installHandsOver {
+		take(st)
 	}
 	if *status {
 		// Through notify: the Windows program has no console to print to.
@@ -797,14 +944,20 @@ func main() {
 
 	if !*once {
 		// One copy per user: settle makes this process that copy, or says that another one is.
-		release, proceed := settle(dir, st, *wowDir != "" || *url != "")
+		release, proceed := settle(dir, st, renewed)
 		if !proceed {
 			return
 		}
 		defer release()
+		if renewed { // what the copy that left wrote last, then the settings given
+			st = loadState(statePath)
+			take(st)
+		}
 	}
 
-	s := &syncer{url: st.uploadURL(), client: &http.Client{Timeout: 30 * time.Second}, st: st,
+	// A redirection from https to plain http is not followed: the token goes with it, and the same host gets it.
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: checkRedirect}
+	s := &syncer{url: st.uploadURL(), client: client, st: st,
 		save: func() { saveState(statePath, st) }, tokens: map[string]*tokenStatus{}, now: time.Now,
 		shown: view{LastSync: st.LastSync, Files: -1}, logPath: logPath, wake: make(chan struct{}, 1)}
 	log.Printf("rookieledger-sync %s, uploading to %s", version, s.url)
