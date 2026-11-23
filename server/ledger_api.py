@@ -127,11 +127,15 @@ class View:
 
     def _creatures(self, records):
         acc = {}
-        blank = lambda: {"n": 0, "cn": 0, "c": 0, "i": {}, "q": {}, "p": {}}
+        blank = lambda: {"n": 0, "gn": 0, "cn": 0, "c": 0, "i": {}, "q": {}, "p": {}}
         for rec in records.values():
-            for creature, entry in rec.get("m", {}).items():
+            # The corpses looted alone and those looted in a group add up: in a group each corpse is counted by one
+            # member only (see ledger_common, w). gn keeps how many were looted in a group.
+            for creature, entry, grouped in [*((c, e, False) for c, e in rec.get("m", {}).items()),
+                                             *((c, e, True) for c, e in rec.get("w", {}).items())]:
                 a = acc.setdefault(int(creature), blank())
                 a["n"], a["cn"], a["c"] = a["n"] + entry["n"], a["cn"] + entry["cn"], a["c"] + entry["c"]
+                a["gn"] += entry["n"] if grouped else 0
                 _sum_pairs(a["i"], entry["i"])
                 _sum_places(a["p"], entry.get("p", {}))   # none in a record stored before places were kept
         for (creature, item), q in lc.quest_item_rates(records).items():
@@ -149,7 +153,8 @@ class View:
             quest_drops = [{"item": item, "quest": q["quest"], "chances": q["n"], "drops": q["k"],
                             "quantity": round(q["each"] * q["k"]) if q["k"] else 0, "rate": ratio(q["k"], q["n"])}
                            for item, q in sorted(a["q"].items())]
-            self.creatures[creature] = {"id": creature, "corpses": a["n"], "coin_corpses": a["cn"],
+            self.creatures[creature] = {"id": creature, "corpses": a["n"], "group_corpses": a["gn"],
+                                        "coin_corpses": a["cn"],
                                         "coin_total": a["c"], "coin_average": ratio(a["c"], a["cn"]),
                                         "place_count": len(a["p"]), "maps": sorted({where[0] for where in a["p"]}),
                                         "drops": drops, "quest_drops": quest_drops}
@@ -436,7 +441,9 @@ SCHEMAS = {
     "Yield": _obj({"item": _INT, **_YIELD}, "One item received, counted against the occasions it could have been"),
     "QuestDrop": _obj({"item": _INT, **_QUEST}, "A quest item: counted only while a quest wanted it"),
     "Creature": _obj({"id": {**_INT, "description": "the game's id of the kind of monster"},
-                      "corpses": {**_COUNT, "description": "corpses looted alone that held something"},
+                      "corpses": {**_COUNT, "description": "corpses looted that held something, alone or in a group"},
+                      "group_corpses": {**_COUNT, "description": "of them, those looted in a party under group loot, "
+                                                                 "each by the member who took its coin"},
                       "coin_corpses": {**_COUNT, "description": "corpses whose coin is known"},
                       "coin_total": {**_COUNT, "description": "their coin, in copper"},
                       "coin_average": {**_RATE, "description": "copper per corpse whose coin is known"},
