@@ -62,7 +62,7 @@ function Tooltip.Lines(creature)
         return nil
     end
     local own = ns.db.own
-    local entry = own.m[creature]
+    local entry = ns.Record.Looted(own, creature)
     local quest, prefix = {}, creature .. ":"
     for key, q in pairs(own.q) do
         if type(key) == "string" and key:sub(1, #prefix) == prefix and type(q) == "table" then

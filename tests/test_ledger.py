@@ -826,7 +826,10 @@ class Addon(unittest.TestCase):
                                                "i": {"2589": [5, 3], "771": [1, 1], "4306": [1, 1]},
                                                "p": {"1429:500:500": 4}})
             self.assertEqual((own["m"]["118"]["n"], own["m"]["118"]["cn"], own["m"]["118"]["c"]), (3, 1, 50))
-            self.assertEqual(own["q"], {"5000:2858": {"q": 367, "j": 2, "n": 3, "k": 1, "t": 2}})
+            self.assertEqual(own["w"]["9100"], {"n": 2, "cn": 2, "c": 154,
+                                                "i": {"2589": [3, 2], "4306": [1, 1], "4568": [1, 1]},
+                                                "p": {"1429:500:500": 2}})
+            self.assertEqual(own["q"], {"5000:2858": {"q": 367, "j": 2, "n": 4, "k": 2, "t": 3}})
             # The log of groups the addon wrote is one the server reads whole, and it is not in the record.
             saved = lc.parse_saved_variables(out.read_text())
             begun, lines = lc.group_lines(saved)

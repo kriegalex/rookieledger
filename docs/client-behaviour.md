@@ -24,10 +24,10 @@ observation, which register the events below, call the functions below at fixed 
 answer to a saved variable. They record nothing in the ledger. To repeat an observation, follow the steps at the top
 of the file. Sections 6 and 7 come from playing with the addon and reading its saved files afterwards. Section 10 comes
 from a line typed in chat that prints the three events with the skill, read off a screenshot. Section 11 comes from
-a probe of the same kind, run by one member of a group of three on build 71037.
+a probe of the same kind, run by one member of a group of three on build 71037, and from the log of groups
+(`Group.lua`) that two members of the same groups uploaded with their records.
 
-Section 11 apart, nothing here was observed in a group or outside that starting zone. Nothing was observed in a
-dungeon.
+Section 11 apart, nothing here was observed in a group, in a dungeon or outside that starting zone.
 
 ## 1. Kills and deaths
 
@@ -202,26 +202,56 @@ and so on to the fifth craft, whose point came after its `UNIT_SPELLCAST_SUCCEED
 
 ## 11. Loot in a group
 
-Three rounds in the open world, in a group of three, all seen from one member's side: no second member ran the
-probe.
+Two sources, both on build 71037 with the French client:
+
+- the probe: three rounds in the open world, in a group of three, seen from one member's side;
+- the log of groups of two members who played together: 9,523 lines over two days, in groups of two to five under
+  group loot from uncommon up, in the open world and in dungeons, two runs of Gnomeregan with both members. The two
+  clocks were set against each other by the rolls, which both logs name by the same number (28 rolls, 0.47 to
+  0.55 s apart).
 
 What the client tells of the group:
 
 - `C_PartyInfo.GetLootMethod()` returns a number: `3` under group loot, `0` under free for all, each as set in the
   game. The global `GetLootMethod` is absent.
 - `GetLootThreshold()` returned `2` with the threshold at uncommon.
+- The game names one corpse differently to two members. The 12 deaths in the open world that both logs hold (same
+  kind of monster, 0.5 to 0.6 s apart by the two clocks) and the boss Electrocutioner 6000 (6235, one per
+  run) had a different fingerprint in each log every time. Which part of the GUID differs is not known.
 
 Under group loot:
 
 - A corpse is one member's to open, whoever killed it. The first value of `CanLootUnit` was `true` for some of
   the partners' kills and `false` for some of the character's own. In one round, 14 of 24 corpses were the
   character's to open and 10 were not.
-- That member's window held the corpse's coin, its items below the threshold, and the member's own quest items
-  (seventh value of `GetLootSlotInfo` `true`, as alone).
-- The coin in the window is the corpse's whole coin, not the member's share. The character then received a third
-  of it, rounded up: 35 of 104, 43 of 129, 23 of 67. One case does not fit: 29 of 54.
-- An item at or above the threshold never showed in a window. The one roll seen (`START_LOOT_ROLL`) started 0.2 s
-  after the monster's death, before anyone had opened the corpse.
+- Only that member's window holds the corpse's coin and its items below the threshold, beside the member's own
+  quest items (seventh value of `GetLootSlotInfo` `true`, as alone). In 41 pairs of windows on the same kind of
+  monster that the two members opened within 4 s of each other, coin was never in both, and an item only three
+  times: the two items every member receives (below), and item 9308 once, which may have been two corpses.
+- The coin in the window is the corpse's whole coin: 525 in one member's window gave 105 to each of five. In 157 of
+  229 windows of one corpse, the purse then grew by the coin divided by the members, rounded up. The chat line
+  "your share of the loot" and the purse add up the shares of corpses looted in the same moment: 369 in one
+  member's window came with a share of 165 to that member and 164 to the other, which fits 74 and 73 of it plus 91
+  each of a corpse another member looted in the same second. The probe's one case that did not fit (29 of 54) is
+  probably such a sum.
+- An item at or above the threshold is in the window too, named with its corpse (139 slots). Its roll
+  (`START_LOOT_ROLL`) starts in the frame in which a window on the corpse opens (31 windows), and every member who
+  opens the corpse while the roll lasts sees the item: 45 windows held nothing else. The window of the member the
+  corpse belongs to opened after its roll had begun in 12 cases, up to 12.5 s after, and held the item. Of 65
+  rolls, 52 were tied to their corpse by a window in one of the two logs, 3 to a chest and 10 to nothing. Of 92
+  rolls that ended, 86 were followed within 2 s by a chat line telling who received the item.
+- Taking what a slot holds announces `LOOT_SLOT_CLEARED` with the slot's number, twice and in the same frame (76
+  coin slots of 76), before the window closes: in each of the 173 windows of a corpse that the next window did not
+  follow within a second, the coin slot, when emptied, was emptied before the close. Each of 447 windows on corpses
+  closed before the next one opened.
+- A member the corpse does not belong to sees in it, besides their quest items and an item being rolled for, a few
+  items that every member receives without the quest flag. Both members took a Workshop Key (6893) from the same
+  Electrocutioner 6000, and 16 windows on Dark Iron Agents (6212) held only a Grime-Encrusted Ring (9326).
+- In a dungeon the client hides which monster died: `UNIT_DIED` gave a secret GUID for each of 829 deaths. The loot
+  window still names its corpses with their creature numbers (275 windows in dungeons).
+- Of the windows that held coin or an item below the threshold other than those every member receives, 74 in 299
+  had no coin: 42 of 134 in the open world, most of them of kinds that never held coin when looted alone (beasts),
+  and 32 of 165 in dungeons.
 
 Otherwise:
 
@@ -231,9 +261,13 @@ Otherwise:
   event is that member's GUID, which does match `UnitGUID`.
 - Addon messages on the `PARTY` channel pass, a corpse's GUID included, and come back to their sender after about
   0.3 s. RookieLedger sends none.
+- Ore, stone and gems mined in Gnomeregan came in windows whose source is neither a creature nor a world object
+  (20 slots).
 
-The addon counts nothing in a group. It writes down what it is told there, one line per death, window, roll and
-chat line about loot (`Group.lua`), so that these statements can be checked from several members' sides at once.
+From these, the addon counts a corpse in a party under group loot, in the open world or a dungeon, when the player
+takes its coin (`Scan.lua`): only one member can, and that member's window holds everything the corpse dropped. A
+corpse without coin is counted by nobody. Under another loot method and in a raid it counts nothing. In every group
+it also writes down what it is told, one line per death, window, roll and chat line about loot (`Group.lua`).
 
 ## Not verified
 
@@ -241,8 +275,8 @@ Read elsewhere, not tried:
 
 - The combat log (`COMBAT_LOG_EVENT_*`) is closed to addons, and registering for it gets the addon blocked. Two
   other addons say so in their code and on their pages. RookieLedger has never registered for it.
-- Inside dungeons the client hides which monster died (the GUIDs of `PARTY_KILL` and `UNIT_DIED` arrive as secret
-  values). From another addon's code.
+- The Workshop Key (6893) and the Grime-Encrusted Ring (9326), which every member receives, are Binds when picked
+  up; the Grime-Encrusted Object (9308) is not. From their tooltips on Wowhead's Classic database.
 
 Reasoned from the observations, not seen directly:
 
@@ -250,6 +284,9 @@ Reasoned from the observations, not seen directly:
   kill at the moment of death and for other players' corpses under the mouse, and `false` for deaths far away.
 - An empty own corpse would answer `false` to `CanLootUnit` from half a second after the death onwards. No empty
   corpse was met, so this answer was never seen.
+- In a group, an item rolled for leaves the corpse when its roll ends, so the owner who opens the corpse after that
+  does not see it: nearly every roll that ended was followed by someone receiving the item. No owner was seen
+  opening a corpse after its roll.
 
 Never met:
 
@@ -261,7 +298,6 @@ Never met:
 - An item that two quests of the log ask for at once.
 
 - A first, successful Pick Pocket on a monster with nothing in its pocket: whether a loot window opens.
-- In a group: whether the window of the member a corpse belongs to holds the whole corpse, as seen from a second
-  member; which monster a roll belongs to when several die together; anything under master loot, round robin or
-  need before greed, in a raid or in a dungeon.
+- In a group: anything under master loot, round robin or need before greed, or in a raid; whether a corpse whose
+  owner leaves its coin in it is opened to the other members later.
 - Higher-level monsters, elites and bosses: whether they can hold nothing.

@@ -26,8 +26,9 @@ Only numbers the game client shows you:
 - per disenchanted item: its quality, class and item level, and the materials received;
 - per kind of vein or herb you gathered: how often, the materials received, and the places (map and position on it)
   where you gathered it;
-- per kind of monster you looted alone: how many corpses, their coin, every item they held (quest items left out),
-  and the places (map and position on it, to half a hundredth of the map) where you looted them;
+- per kind of monster you looted, alone or in a group (see below): how many corpses, their coin, every item they
+  held (quest items left out), and the places (map and position on it, to half a hundredth of the map) where you
+  looted them;
 - per quest item a kind of monster gave you: the quest and the objective that asked for it, how many corpses of that
   monster you looted while the quest still wanted the item, and how many of them held it.
 
@@ -41,10 +42,17 @@ holds three numbers: when it began, when it last changed, and how many seconds o
 that takes uploads from anyone uses them to tell a record that was played from one that was made up. A record is named by a random 8-digit id made on first login. A record only
 grows: a skill range widens, a count goes up.
 
-In a group the record counts nothing: there a corpse is one member's to open, and what the group rolls for never
-shows in a loot window. To work out what could be counted there, the addon keeps a log while you are in a group,
-beside the record in the same saved file. The site keeps it apart from the records, for 90 days, and makes nothing
-it serves from it. A line of the log is a time and one thing the game told the addon:
+In a group, corpses count in a party under group loot, in the open world and in dungeons. There a corpse is one
+member's to open, whoever killed it: only that member sees its coin and its items, the items the group rolls for
+included while the roll lasts. The addon counts a corpse when you take its coin, which only one member can do, so
+no corpse is counted twice when several members run the addon. A corpse without coin, as most beasts' are, is not
+counted in a group. The record keeps the corpses looted in a group apart from those looted alone, and the site adds
+them up. Under another loot method and in a raid, nothing is counted.
+
+While you are in a group the addon also keeps a log of what the game tells it of loot there, beside the record in
+the same saved file: counting in groups was worked out from it, and counting under the other loot methods will be.
+The site keeps it apart from the records, for 90 days, and makes nothing it serves from it. A line of the log is a
+time and one thing the game told the addon:
 
 - the size of the group, its loot method and threshold, the kind of instance and the map it is on;
 - a monster's death, who the game named as its killer and whether the corpse was yours to open;
@@ -53,9 +61,9 @@ it serves from it. A line of the log is a time and one thing the game told the a
 - that someone received an item or coin, as the chat says it: the item's number or the amount.
 
 A member is written as "me", "party2" or "other", never by name, and of a chat line no text is kept. A corpse is
-written as the creature's number and a fingerprint of the game's name for it: the same for every member who saw
-that corpse, so that the lines of two members can be put side by side, without the realm and the time of appearance
-that the name itself tells. The log keeps its last 4000 lines.
+written as the creature's number and a fingerprint of the game's name for it, without the realm and the time of
+appearance that the name itself tells. Two members' games name the same corpse differently, so the lines of two
+members are put side by side by the creature's number and the time. The log keeps its last 4000 lines.
 
 Beside the record and that log, the addon keeps one small file per character that never leaves your computer. The companion app
 does not read it. It holds:
