@@ -321,10 +321,10 @@ request (`/v1/places`); the address is the `API` constant at the top of `site/ap
 The pictures and the names are not in the repository: they are Blizzard's, and are made from a game install.
 
 ```sh
-python3 tools/maps/build_world.py cache build/site --install "<World of Warcraft folder>"   # tiles/ and world.json
-python3 tools/maps/build_names.py cache build/site --install "<World of Warcraft folder>"   # names.json
-cp site/* build/site/                                                                       # the page and its privacy notice
-python3 -m http.server 8080 --directory build/site                                          # to look at it
+python3 tools/maps/build_world.py build/cache build/site --install "<World of Warcraft folder>"   # tiles/ and world.json
+python3 tools/maps/build_names.py build/cache build/site --install "<World of Warcraft folder>"   # names.json
+cp site/* build/site/                                                                             # the page and its privacy notice
+python3 -m http.server 8080 --directory build/site                                                # to look at it
 ```
 
 - `build_world.py` needs Pillow and numpy. On one canvas, the world's, it lays each continent's map over the
@@ -334,7 +334,9 @@ python3 -m http.server 8080 --directory build/site                              
   install gives the art in its own language; without `--install` the textures are downloaded, in English, from
   wago.tools, which refuses more than a hundred or so in a row.
 - The tables (zones, their rectangles, item names) come from wago.tools for the client build named in
-  `tools/maps/gamedata.py`, and are kept in the cache folder.
+  `tools/maps/gamedata.py`, and are kept in the cache folder, `build/cache`, which Git ignores. That folder also
+  keeps every monster name read so far (`creatures.<language>.json`): the game empties its own cache when it is
+  updated, so keep the folder from one build to the next.
 - At the closest zoom the ground itself shows over each zone's own land: the game's minimap, which the build takes
   from the install square by square. Without `--install` there is no such zoom.
 - No name on the page comes from what members upload. Items are named from the game's tables. Those hold no
