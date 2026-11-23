@@ -18,6 +18,8 @@ A record is one WoW account's observations, named by an 8-hex id (no character n
                  i: {item: [quantity, corpses that held it]},
                  p: {"map:x:y": corpses looted there}}   where the player stood, x, y in thousandths of the map in
                  steps of 5; empty for a record written before the addon noted it
+  w[creature]                the same as m, for the corpses looted in a party under group loot: each counted by the
+                             member who took its coin (see Scan.lua). Empty in a record of an addon before v0.9.0
   q["creature:item"] = {q: quest, j: objective, n: chances, k: drops, t: quantity}   a quest item: the corpses of that
                  kind of monster looted while objective j of the quest was open, those that held the item, how many
 An upload carries the uploader's own record and nothing else. `data/ledger.sqlite` keeps one row per record id and
@@ -246,27 +248,50 @@ def _places(rec, raw, n):
     return places
 
 
+def _check_creatures(rec, creatures, section):
+    """Checks the entries of m or w (the same shape) into rec[section]."""
+    for creature, entry in creatures.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("i") or {}, dict) \
+                or not isinstance(entry.get("p") or {}, dict):
+            raise LedgerError("bad creature entry")
+        n = _int(entry.get("n"), 1, MAX_COUNT)
+        known = _int(entry.get("cn", 0), 0, n)
+        items = {}
+        for item, pair in (entry.get("i") or {}).items():
+            quantity, times = _array(pair, 2)
+            _int(item, 1, MAX_ID), _int(times, 1, n), _int(quantity, times, times * 1000)
+            if len(items) < MAX_ITEMS:
+                items[str(item)] = [quantity, times]
+            else:
+                rec["skipped"] = rec.get("skipped", 0) + 1
+        rec[section][str(_int(creature, 1, MAX_ID))] = {
+            "n": n, "cn": known, "c": _int(entry.get("c", 0), 0, known * MAX_COPPER), "i": items,
+            "p": _places(rec, entry.get("p") or {}, n)}
+
+
 def check_record(raw):
     """The record as JSON-ready data, or LedgerError. A record only grows, so one with more than MAX_ENTRIES entries
     is not refused (its author could never upload again): colours, then disenchants, gathered nodes, crafts,
-    creatures and quest items are kept up to that number, of each node MAX_PLACES places, of each creature MAX_ITEMS
-    items, and "skipped" says how many entries were left out. A record of a version without quest items has none."""
+    creatures looted alone, quest items and creatures looted in a group are kept up to that number, of each node
+    MAX_PLACES places, of each creature MAX_ITEMS items, and "skipped" says how many entries were left out. A record
+    of a version without quest items, or without loot in a group, has none."""
     if not isinstance(raw, dict):
         raise LedgerError("record is not a table")
     colours, crafts, disenchants = raw.get("c") or {}, raw.get("s") or {}, raw.get("d") or {}
     gathered, creatures, quest_items = raw.get("g") or {}, raw.get("m") or {}, raw.get("q") or {}
-    if not all(isinstance(t, dict) for t in (colours, crafts, disenchants, gathered, creatures, quest_items)):
+    grouped = raw.get("w") or {}
+    sections = (colours, crafts, disenchants, gathered, creatures, quest_items, grouped)
+    if not all(isinstance(t, dict) for t in sections):
         raise LedgerError("record sections are not tables")
-    skipped = max(0, len(colours) + len(crafts) + len(disenchants) + len(gathered) + len(creatures) + len(quest_items)
-                  - MAX_ENTRIES)
+    skipped = max(0, sum(len(section) for section in sections) - MAX_ENTRIES)
     if skipped:
         keep = iter(range(MAX_ENTRIES))
-        colours, disenchants, gathered, crafts, creatures, quest_items = (
+        colours, disenchants, gathered, crafts, creatures, quest_items, grouped = (
             {key: section[key] for key, _ in zip(section, keep)}
-            for section in (colours, disenchants, gathered, crafts, creatures, quest_items))
+            for section in (colours, disenchants, gathered, crafts, creatures, quest_items, grouped))
     rec = {"rev": _int(raw.get("rev", 0), 0, MAX_REV), "t": _int(raw.get("t", 0), 0, 2**32 - 1),
            "b": _int(raw.get("b", 0), 0, 10**9), "f": _int(raw.get("f", 0), 0, 2**32 - 1),
-           "a": _int(raw.get("a", 0), 0, 10**9), "c": {}, "s": {}, "d": {}, "g": {}, "m": {}, "q": {}}
+           "a": _int(raw.get("a", 0), 0, 10**9), "c": {}, "s": {}, "d": {}, "g": {}, "m": {}, "w": {}, "q": {}}
     if skipped:
         rec["skipped"] = skipped
     for recipe, entry in colours.items():
@@ -311,22 +336,8 @@ def check_record(raw):
             materials[str(material)] = [quantity, times]
         rec["g"][str(_int(node, 1, MAX_ID))] = {"k": _int(entry.get("k"), 1, 2), "n": n, "m": materials,
                                                 "p": _places(rec, entry.get("p") or {}, n)}
-    for creature, entry in creatures.items():
-        if not isinstance(entry, dict) or not isinstance(entry.get("i") or {}, dict) \
-                or not isinstance(entry.get("p") or {}, dict):
-            raise LedgerError("bad creature entry")
-        n = _int(entry.get("n"), 1, MAX_COUNT)
-        known = _int(entry.get("cn", 0), 0, n)
-        items = {}
-        for item, pair in (entry.get("i") or {}).items():
-            quantity, times = _array(pair, 2)
-            _int(item, 1, MAX_ID), _int(times, 1, n), _int(quantity, times, times * 1000)
-            if len(items) < MAX_ITEMS:
-                items[str(item)] = [quantity, times]
-            else:
-                rec["skipped"] = rec.get("skipped", 0) + 1
-        rec["m"][str(_int(creature, 1, MAX_ID))] = {"n": n, "cn": known, "c": _int(entry.get("c", 0), 0, known * MAX_COPPER),
-                                                     "i": items, "p": _places(rec, entry.get("p") or {}, n)}
+    _check_creatures(rec, creatures, "m")
+    _check_creatures(rec, grouped, "w")
     for key, entry in quest_items.items():
         m = re.fullmatch(r"(\d{1,7}):(\d{1,7})", key) if isinstance(key, str) else None
         if not m or not isinstance(entry, dict):
@@ -449,7 +460,7 @@ def _epoch(iso):
 
 def events(rec):
     """How many things a record counted: corpses, gathers, crafts and disenchants."""
-    return (sum(entry["n"] for section in ("m", "g", "d") for entry in rec.get(section, {}).values())
+    return (sum(entry["n"] for section in ("m", "w", "g", "d") for entry in rec.get(section, {}).values())
             + sum(made for made, _ups in rec.get("s", {}).values()))
 
 
@@ -642,7 +653,7 @@ def digest(con, hours=24, now=None):
         counts_at = _epoch(added) + PROBATION
         state = ("revoked" if revoked else "HELD: " + held if held else "approved" if approved
                  else "counts" if counts_at <= now else "counts from " + now_iso(counts_at))
-        places = sum(len(entry.get("p", {})) for section in ("m", "g") for entry in rec.get(section, {}).values())
+        places = sum(len(entry.get("p", {})) for section in ("m", "w", "g") for entry in rec.get(section, {}).values())
         pace = "%.0f an hour" % (done * 3600 / active) if active else "no play time"
         lines.append(f"{label}: registered {added}, {state}; {done} things recorded, {places} places, "
                      f"{active / 3600:.1f} hours of play, {pace}")
@@ -731,12 +742,13 @@ def gather_yields(records):
 
 def drop_rates(records):
     """{creature: {"n": corpses looted, "coin": average copper per corpse whose coin is known (None when none is),
-    "items": {item: (average quantity per corpse, share of corpses that held it)}}} summed over every record. Only
-    corpses looted alone are in the records, and a corpse that held nothing never opens a loot window, so "per
-    corpse" means per corpse that had something to loot."""
+    "items": {item: (average quantity per corpse, share of corpses that held it)}}} summed over every record, the
+    corpses looted alone and those looted in a group together. A corpse that held nothing never opens a loot window,
+    and in a group one without coin is counted by nobody, so "per corpse" means per corpse that had something to
+    loot."""
     acc = {}
     for rec in records.values():
-        for creature, entry in rec.get("m", {}).items():
+        for creature, entry in [*rec.get("m", {}).items(), *rec.get("w", {}).items()]:
             a = acc.setdefault(int(creature), {"n": 0, "cn": 0, "c": 0, "i": {}})
             a["n"] += entry["n"]
             a["cn"] += entry["cn"]

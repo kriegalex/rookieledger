@@ -177,6 +177,18 @@ class Checks(unittest.TestCase):
         self.assertEqual(own["m"]["299"], {"n": 4, "cn": 2, "c": 370, "i": {"2589": [5, 3], "771": [1, 1]}, "p": {}})
         self.assertNotIn("token", json.dumps(own))
         self.assertNotIn("aaaaaaaa", json.dumps(own), "records of other members in the file are not read")
+        self.assertEqual(own["w"], {}, "a record of an addon before v0.9.0 has no corpses looted in a group")
+
+    def test_corpses_looted_in_a_group_are_checked_as_those_looted_alone(self):
+        entry = lambda n, cn, c, times: {"n": n, "cn": cn, "c": c, "i": {9326: {1: times, 2: times}},
+                                         "p": {"1442:430:655": n}}
+        rec = lc.check_record({"w": {6212: entry(2, 2, 180, 1)}})
+        self.assertEqual(rec["w"], {"6212": {"n": 2, "cn": 2, "c": 180, "i": {"9326": [1, 1]}, "p": {"1442:430:655": 2}}})
+        self.assertEqual(rec["m"], {})
+        for bad in (entry(2, 3, 180, 1), entry(2, 2, 180, 3), entry(0, 0, 0, 1), "x"):
+            with self.assertRaises(lc.LedgerError, msg=bad):
+                lc.check_record({"w": {6212: bad}})
+        self.assertEqual(lc.events({**rec, "m": {"299": {"n": 3}}}), 5, "the pace a token is held to counts both")
 
     def test_refuses_a_bad_own_record(self):
         for old, new in (("125, -- [2]", "127, -- [2]"),            # lo above hi

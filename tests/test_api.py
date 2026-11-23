@@ -97,6 +97,25 @@ class Totals(unittest.TestCase):
             {"item": 2834, "quest": 358, "chances": 7, "drops": 5, "quantity": 5, "rate": 0.7143}])
         # A monster whose coin was never seen has no average, not an average of zero.
         self.assertIsNone(self.get("/creatures/1548")["coin_average"])
+        self.assertEqual(gnoll["group_corpses"], 0)
+
+    def test_corpses_looted_in_a_group_add_up_with_those_looted_alone(self):
+        second = lc.check_record(as_saved({**SECOND, "w": {
+            "1674": {"n": 2, "cn": 2, "c": 30, "i": {"2589": [1, 1], "4568": [1, 1]}, "p": {"1429:410:650": 2}},
+            "6212": {"n": 1, "cn": 1, "c": 99, "i": {"9326": [1, 1]}}}}))
+        view = ledger_api.View({**RECORDS, "1234abcd": second}, "2026-11-19T22:00:00+00:00")
+        gnoll = ledger_api.answer(view, "/creatures/1674", "")
+        self.assertEqual((gnoll["corpses"], gnoll["group_corpses"], gnoll["coin_corpses"], gnoll["coin_total"]),
+                         (12, 2, 10, 90))
+        self.assertEqual(gnoll["drops"][:2], [
+            {"item": 2589, "times": 6, "quantity": 8, "rate": 0.5, "average_quantity": 1.3333},
+            {"item": 4568, "times": 1, "quantity": 1, "rate": 0.0833, "average_quantity": 1.0}])
+        self.assertEqual(ledger_api.answer(view, "/creatures/1674/places", "map=1429")["data"],
+                         [{"creature": 1674, "map": 1429, "x": 0.41, "y": 0.65, "corpses": 9}])
+        agent = ledger_api.answer(view, "/creatures/6212", "")
+        self.assertEqual((agent["corpses"], agent["group_corpses"], agent["coin_average"]), (1, 1, 99))
+        self.assertEqual(ledger_api.answer(view, "/items/9326", "")["dropped_by"][0]["corpses"], 1)
+        self.assertEqual(lc.drop_rates({"x": second})[1674]["n"], 6)
 
     def test_an_item_names_everything_that_gave_it(self):
         self.assertEqual(self.get("/items/2589")["dropped_by"],
