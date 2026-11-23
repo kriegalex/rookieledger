@@ -1,6 +1,6 @@
 -- Record.lua: one account's observations.
 --
--- A record is { rev, t, b, f, a, c, s, d, g, m, q }: a change counter, the time and game build of the last change,
+-- A record is { rev, t, b, f, a, c, s, d, g, m, w, q }: a change counter, the time and game build of the last change,
 -- the time of the first change (f) and the seconds of play the changes took (a, see ns.Touch), and
 --   c[recipe] = { profession, lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3 }
 --       the lowest and highest skill at which the recipe showed each colour (0 orange, 1 yellow, 2 green, 3 grey;
@@ -17,6 +17,8 @@
 --       creature is the game's id of the kind of monster. A place is the cell of the map the player stood in when
 --       looting: x and y in thousandths as for a node, but in steps of CELL, since a monster walks and a vein does
 --       not. p is missing in an entry written before places were noted.
+--   w[creature]: the same as m, for the corpses looted in a group (see Scan.lua). Kept apart so that the site can
+--       tell them from the corpses looted alone; it adds the two.
 --   q["creature:item"] = { q = quest, j = objective, n = chances, k = drops, t = quantity }
 --       a quest item, which only drops for who has the quest: n counts the corpses of that kind of monster looted
 --       while objective j of the quest was still open, k those that held the item, t how many of it they held.
@@ -37,7 +39,7 @@ local CELL = 5            -- thousandths of a map: the side of the cell a looted
 local MAX_QUEST_ITEMS = 5000
 
 function Record.New()
-    return { rev = 0, t = 0, b = 0, f = 0, a = 0, c = {}, s = {}, d = {}, g = {}, m = {}, q = {} }
+    return { rev = 0, t = 0, b = 0, f = 0, a = 0, c = {}, s = {}, d = {}, g = {}, m = {}, w = {}, q = {} }
 end
 
 -- Notes that recipe showed colour at skill. True when that widened a range.
@@ -140,13 +142,14 @@ function Record.Gather(rec, node, kind, loot, map, x, y)
     end
 end
 
--- One looted corpse. copper: its coin, or nil when the loot window did not let us tell which corpse held how much;
--- loot: { [item id] = quantity }; map, x, y: where the player stood (x, y in thousandths), or nil.
-function Record.Corpse(rec, creature, copper, loot, map, x, y)
-    local entry = rec.m[creature]
+-- One looted corpse, in section (rec.m alone, rec.w in a group). copper: its coin, or nil when the loot window did
+-- not let us tell which corpse held how much; loot: { [item id] = quantity }; map, x, y: where the player stood (x, y
+-- in thousandths), or nil.
+function Record.Corpse(section, creature, copper, loot, map, x, y)
+    local entry = section[creature]
     if not entry then
         entry = { n = 0, cn = 0, c = 0, i = {} }
-        rec.m[creature] = entry
+        section[creature] = entry
     end
     entry.n = entry.n + 1
     if copper then
@@ -168,6 +171,23 @@ function Record.Corpse(rec, creature, copper, loot, map, x, y)
     if places < MAX_PLACES then
         entry.p[key] = (entry.p[key] or 0) + 1
     end
+end
+
+-- The corpses of creature looted alone and in a group together, as { n, cn, c, i } like an entry of m; nil for none.
+function Record.Looted(rec, creature)
+    local alone, grouped = rec.m[creature], rec.w[creature]
+    if not (alone and grouped) then
+        return alone or grouped
+    end
+    local items = {}
+    for _, entry in ipairs({ alone, grouped }) do
+        for item, pair in pairs(entry.i) do
+            local sum = items[item] or { 0, 0 }
+            sum[1], sum[2] = sum[1] + pair[1], sum[2] + pair[2]
+            items[item] = sum
+        end
+    end
+    return { n = alone.n + grouped.n, cn = alone.cn + grouped.cn, c = alone.c + grouped.c, i = items }
 end
 
 -- Notes that creature drops item for objective `objective` of quest. Returns the entry to count chances in, or nil

@@ -7,10 +7,9 @@
 -- Gathering: after a Mining or Herb Gathering cast, the vein or herb the loot window names as its source, what it
 --   held, and where on the map the player stood.
 -- Monster loot: for every corpse a loot window names as a source, the kind of monster, the items of every quality
---   and the coin it held. Only while not in a group (there a corpse is one member's to open, and its window leaves
---   out what the group rolls for: Group.lua writes down what is seen there), only what is not a quest item, and
---   each corpse once. A window opened by Skinning or Pick Pocket names a creature too, but holds
---   nothing it dropped: it is not read.
+--   and the coin it held; only what is not a quest item, and each corpse once. A window opened by Skinning or Pick
+--   Pocket names a creature too, but holds nothing it dropped: it is not read. In a group, only in a party under
+--   group loot, and there only the corpses whose coin the player takes (see "Group loot" further down).
 -- Quest items: a quest item only drops for who has the quest, so it is counted apart, against the corpses looted
 --   while the quest still wanted it. Which quest that is comes from the quest log: the objective whose text names
 --   the item (see "Quest items" further down).
@@ -599,13 +598,14 @@ local function StillWanted(wanted, quest, objective)
 end
 
 -- A corpse of creature, counted for the first time. dropped: { [quest item] = quantity } it held, names: their
--- names. True when the record changed.
-local function QuestChances(creature, dropped, names)
+-- names; wanted: what WantedItems gave when its window opened, if that was earlier than now. True when the record
+-- changed.
+local function QuestChances(creature, dropped, names, wanted)
     local known = questItems[creature]
     if not known and not next(dropped) then
         return false
     end
-    local wanted = WantedItems()
+    wanted = wanted or WantedItems()
     local changed = false
     for item, entry in pairs(known or {}) do
         if StillWanted(wanted, entry.q, entry.j) then
@@ -746,13 +746,117 @@ local function Copper(text)
 end
 Scan.Copper = Copper
 
+local held, heldOrder = {}, {}   -- [guid] = a corpse of ours seen in a group, until its coin is taken (see Hold)
+
+-- Counts a corpse, in section (own.m alone, own.w in a group), unless it already was. corpse: { creature, items,
+-- quest, names [, wanted] } as CorpseLoot reads it. True when the record changed.
+local function Count(section, guid, corpse, copper, map, x, y)
+    if not MarkSeen(guid) then
+        return false
+    end
+    held[guid] = nil
+    Record.Corpse(section, corpse.creature, copper, corpse.items, map, x, y)
+    local text = LootText(corpse.items)
+    if copper and copper > 0 then
+        text = (text and (text .. ", ") or "") .. CoinText(copper)
+    end
+    if next(corpse.quest) then
+        text = (text and (text .. ", ") or "") .. ns.L.questItems:format(LootText(corpse.quest))
+    end
+    QuestChances(corpse.creature, corpse.quest, corpse.names, corpse.wanted)
+    ns.Log("m", CreatureText(guid, corpse.creature) .. ns.L.colon .. (text or ns.L.nothing))
+    return true
+end
+
+-- Group loot -----------------------------------------------------------------
+-- In a party under group loot a corpse is one member's to open, whoever killed it. Only that member's window holds
+-- its coin and its items, the items the group rolls for among them while the roll lasts. Another member who opens it
+-- sees only what drops for each member (their quest items, and a few items every member gets) and an item being
+-- rolled for. So a corpse is counted by the member who takes its coin, which can happen only once, with what the
+-- window held when that member first saw it: no corpse is counted by two members, and a corpse without coin is
+-- counted by none. Under another loot method, in a raid or in another kind of instance nothing is counted
+-- (docs/client-behaviour.md, section 11).
+
+local GROUP_LOOT = (Enum and Enum.LootMethod and Enum.LootMethod.Group) or 3
+local MAX_HELD = 50   -- corpses waiting for their coin to be taken, the oldest let go first
+-- The open window's coin, when it is that of corpses of ours: { slot, guids [, closed] }. closed: the time of the
+-- frame in which the window closed, in which a coin taken still counts.
+local coinSlot
+
+-- "alone", "group" in a group where a corpse can be counted, or nil where nothing is counted.
+local function Looting()
+    if ns.Try(IsInGroup) ~= true then
+        return "alone"
+    end
+    if ns.Try(IsInRaid) == true then
+        return nil
+    end
+    local method = ns.Plain((ns.Try((C_PartyInfo or {}).GetLootMethod)))
+    if method == nil then
+        method = ns.Plain((ns.Try(GetLootMethod)))   -- older clients: a word
+    end
+    local _, kind = ns.Try(IsInInstance)
+    kind = ns.Plain(kind)
+    if (method == GROUP_LOOT or method == "group") and (kind == "none" or kind == "party") then
+        return "group"
+    end
+    return nil
+end
+
+-- Keeps a corpse of ours as its window first shows it, with the quests that wanted its items then: taking a quest
+-- item before the coin may end the objective it counts for.
+local function Hold(guid, corpse)
+    if held[guid] then
+        return   -- opened before: what it held then is what it dropped
+    end
+    if questItems[corpse.creature] or next(corpse.quest) then
+        corpse.wanted = WantedItems()
+    end
+    held[guid] = corpse
+    heldOrder[#heldOrder + 1] = guid
+    if #heldOrder > MAX_HELD then
+        local waiting = {}   -- without the corpses counted since
+        for _, other in ipairs(heldOrder) do
+            if held[other] then
+                waiting[#waiting + 1] = other
+            end
+        end
+        heldOrder = waiting
+        if #heldOrder > MAX_HELD then
+            held[table.remove(heldOrder, 1)] = nil
+        end
+    end
+end
+
+-- A slot of the open window was emptied. When it is the coin of corpses of ours, they are counted. The game says it
+-- twice, in the same frame, and before the window closes (docs/client-behaviour.md, section 11); once a frame has
+-- gone by after the close, an emptied slot is another window's.
+local function SlotCleared(slot)
+    if not coinSlot or slot ~= coinSlot.slot or (coinSlot.closed and coinSlot.closed ~= GetTime()) then
+        return
+    end
+    local changed = false
+    for _, guid in ipairs(coinSlot.guids) do
+        local corpse = held[guid]
+        if corpse and Count(ns.db.own.w, guid, corpse, corpse.copper, corpse.map, corpse.x, corpse.y) then
+            changed = true
+        end
+    end
+    coinSlot = nil   -- the game may announce it twice
+    if changed then
+        ns.Touch()
+    end
+end
+
 -- A loot window that is neither a disenchant's nor a gather's: corpses, if every source it names is one.
 local function CorpseLoot()
-    if ns.Try(IsInGroup) == true or type(GetLootSourceInfo) ~= "function" then
+    coinSlot = nil   -- read once per window: the game's second announcement of it does not come here
+    local looting = Looting()
+    if not looting or type(GetLootSourceInfo) ~= "function" then
         return
     end
     local corpses, order = {}, {}   -- [guid] = { creature, items = {} }
-    local windowCopper, shares = nil, nil
+    local windowCopper, shares, moneySlot, monies = nil, nil, nil, 0
     for slot = 1, ns.Try(GetNumLootItems) or 0 do
         local sources = Pack(ns.Try(GetLootSourceInfo, slot))
         local named = math.ceil(sources.n / 2)   -- the corpses this slot names
@@ -768,7 +872,7 @@ local function CorpseLoot()
         end
         local money = not item and ns.Plain(ns.Try(GetLootSlotType, slot)) == MONEY_SLOT
         if money then
-            windowCopper, shares = Copper(ns.Plain(name)), {}
+            windowCopper, shares, moneySlot, monies = Copper(ns.Plain(name)), {}, slot, monies + 1
         end
         for j = 1, sources.n, 2 do
             local guid, amount = ns.Plain(sources[j]), ns.Plain(sources[j + 1])
@@ -802,39 +906,55 @@ local function CorpseLoot()
             end
         end
     end
-    -- Coin: the window's text gives the total. With one corpse it is that corpse's; with several, the shares the
-    -- client names per corpse are taken only if they add up to that total, else the coin of these corpses is unknown.
-    local shareTotal = 0
+    -- Coin: the window's text gives the total. With one corpse, or one that the coin names, it is that corpse's; with
+    -- several, the shares the client names per corpse are taken only if they add up to that total, else the coin of
+    -- these corpses is unknown.
+    local shareTotal, coined = 0, 0
     for _, amount in pairs(shares or {}) do
-        shareTotal = shareTotal + amount
+        shareTotal, coined = shareTotal + amount, coined + 1
     end
-    local changed = false
+    local function CopperOf(guid)
+        if not shares then
+            return 0
+        elseif not windowCopper then
+            return nil
+        elseif #order == 1 then
+            return windowCopper
+        elseif coined == 1 then
+            return shares[guid] and windowCopper or 0
+        elseif shareTotal == windowCopper then
+            return shares[guid] or 0
+        end
+        return nil
+    end
     local map, x, y = Place()   -- one window, one place: the corpses it names lie within reach of where we stand
+    if looting == "alone" then
+        local changed = false
+        for _, guid in ipairs(order) do
+            if Count(ns.db.own.m, guid, corpses[guid], CopperOf(guid), map, x, y) then
+                changed = true
+            end
+        end
+        if changed then
+            ns.Touch()
+        end
+        return
+    end
+    -- In a group the corpses of ours are those the coin names: they wait for it to be taken.
+    if monies ~= 1 then
+        return
+    end
+    local ours = {}
     for _, guid in ipairs(order) do
-        if MarkSeen(guid) then
-            local copper
-            if not shares then
-                copper = 0
-            elseif windowCopper and #order == 1 then
-                copper = windowCopper
-            elseif windowCopper and shareTotal == windowCopper then
-                copper = shares[guid] or 0
-            end
-            Record.Corpse(ns.db.own, corpses[guid].creature, copper, corpses[guid].items, map, x, y)
-            changed = true
-            local held = LootText(corpses[guid].items)
-            if copper and copper > 0 then
-                held = (held and (held .. ", ") or "") .. CoinText(copper)
-            end
-            if next(corpses[guid].quest) then
-                held = (held and (held .. ", ") or "") .. ns.L.questItems:format(LootText(corpses[guid].quest))
-            end
-            QuestChances(corpses[guid].creature, corpses[guid].quest, corpses[guid].names)
-            ns.Log("m", CreatureText(guid, corpses[guid].creature) .. ns.L.colon .. (held or ns.L.nothing))
+        if shares[guid] and not seen[guid] then
+            local corpse = corpses[guid]
+            corpse.copper, corpse.map, corpse.x, corpse.y = CopperOf(guid), map, x, y
+            Hold(guid, corpse)
+            ours[#ours + 1] = guid
         end
     end
-    if changed then
-        ns.Touch()
+    if #ours > 0 then
+        coinSlot = { slot = moneySlot, guids = ours }
     end
 end
 
@@ -902,7 +1022,7 @@ function Scan.Init()
     for _, event in ipairs({
         "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED", "SKILL_LINES_CHANGED",
         "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_FAILED_QUIET",
-        "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY", "LOOT_CLOSED", "BAG_UPDATE_DELAYED",
+        "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY", "LOOT_CLOSED", "LOOT_SLOT_CLEARED", "BAG_UPDATE_DELAYED",
     }) do
         if event:sub(1, 14) == "UNIT_SPELLCAST" and frame.RegisterUnitEvent then
             -- Our own casts only: unfiltered, the game sends those of every unit in sight.
@@ -916,6 +1036,11 @@ function Scan.Init()
             OnSpellcast(event, ...)
         elseif event == "LOOT_CLOSED" then
             lootRead = false
+            if coinSlot then
+                coinSlot.closed = GetTime()   -- the corpses whose coin is not taken by the end of this frame wait on
+            end
+        elseif event == "LOOT_SLOT_CLEARED" then
+            SlotCleared(ns.Plain((...)))
         elseif event == "LOOT_READY" then
             local pending = PendingDisenchant()
             if pending and not pending.loot then

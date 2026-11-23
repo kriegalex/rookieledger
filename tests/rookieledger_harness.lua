@@ -68,13 +68,14 @@ local function newClient(name)
     env.UnitName = function(unit) return unit == "target" and c.targetName or name end
     env.date = os.date
     env.IsInGroup = function() return c.grouped == true end
-    -- The group: three members under group loot from uncommon up. c.party = { party1 = guid }, c.canLoot = { [guid]
+    -- The group: three members under group loot from uncommon up, unless c.method says another loot method, c.raid
+    -- that it is a raid and c.instance the kind of instance it is in. c.party = { party1 = guid }, c.canLoot = { [guid]
     -- = whether the corpse is ours to open }, c.money the character's coin, c.rolls = { [roll] = item }.
-    env.IsInRaid = function() return false end
+    env.IsInRaid = function() return c.raid == true end
     env.GetNumGroupMembers = function() return c.grouped and 3 or 0 end
-    env.C_PartyInfo = { GetLootMethod = function() return 3 end }
+    env.C_PartyInfo = { GetLootMethod = function() return c.method or 3 end }
     env.GetLootThreshold = function() return 2 end
-    env.IsInInstance = function() return false, "none" end
+    env.IsInInstance = function() return c.instance ~= nil, c.instance or "none" end
     env.GetMoney = function() return c.money or 0 end
     env.CanLootUnit = function(guid) return (c.canLoot and c.canLoot[guid]) == true, true end
     env.GetLootRollItemLink = function(roll)
@@ -565,7 +566,8 @@ A.grouped = true
 A.lootSource = corpse(118, "0000000B04")
 lootWindow({ { 2589, 1 } })
 A.grouped = false
-check("nothing is counted in a group", own.rev == revAfterLoot and kobold.n == 3)
+check("in a group a corpse without coin for us is not counted", own.rev == revAfterLoot and kobold.n == 3
+    and own.w[118] == nil)
 A.lootSource = "GameObject-0-4444-0-1-2843-00006A2B77"   -- a chest
 lootWindow({ { 2589, 1 } })
 A.lootSource = nil   -- a window that names no source
@@ -825,7 +827,7 @@ check("the quest items known are counted on after a reload", entry.n == 3 and en
 A.grouped = true
 houndCorpse({ blood })
 A.grouped = false
-check("nothing of it is counted in a group", entry.n == 3)
+check("in a group a corpse that only shows the quest item is no chance", entry.n == 3)
 A.quests[2].objectives[2].finished = true
 houndCorpse({ blood })
 houndCorpse({ { 2589, 1 } })
@@ -949,8 +951,128 @@ A.ns.Tooltip.SetFrom(0)
 A.nodropdown = nil
 A.mouseover = nil
 
+-- Loot in a group --------------------------------------------------------------
+-- In a party under group loot a corpse is counted by the member who takes its coin, with what the window held when
+-- that member first saw it, apart from the corpses looted alone.
+
+local function slotCleared(slot)
+    A.fire("LOOT_SLOT_CLEARED", slot)
+    A.fire("LOOT_SLOT_CLEARED", slot)   -- the game says it twice
+end
+-- A window whose slots take are emptied before it closes.
+local function groupWindow(slots, take)
+    A.loot = slots
+    A.fire("LOOT_READY")
+    A.fire("LOOT_READY")
+    for _, slot in ipairs(take or {}) do
+        slotCleared(slot)
+    end
+    A.fire("LOOT_CLOSED")
+    A.loot = {}
+end
+local function corpses()
+    local n = 0
+    for _, section in ipairs({ A.db.own.m, A.db.own.w }) do
+        for _, entry in pairs(section) do
+            n = n + entry.n
+        end
+    end
+    return n
+end
+A.grouped, A.party = true, { party1 = "Player-6941-0D0D0D0D" }
+local w = A.db.own.w
+A.lootSource = corpse(9100, "0000005001")
+groupWindow({ { coin = "1 Argent\n4 Cuivre" }, { 2589, 2 }, { 4568, 1 }, { 9999, 1, quest = true } }, { 2, 3, 1 })
+check("in a group, the corpse whose coin we take is counted apart, with everything its window held",
+    w[9100] and w[9100].n == 1 and w[9100].cn == 1 and w[9100].c == 104 and w[9100].i[2589][1] == 2
+    and w[9100].i[4568][2] == 1 and w[9100].i[9999] == nil and A.db.own.m[9100] == nil)
+groupWindow({ { coin = "1 Argent\n4 Cuivre" } }, { 1 })
+check("and not twice", w[9100].n == 1 and w[9100].c == 104)
+A.lootSource = corpse(9100, "0000005002")
+groupWindow({ { 9326, 1 }, { 4568, 1 }, { 9999, 1, quest = true } }, { 1, 3 })
+check("a corpse that shows us no coin is another member's: not counted", w[9100].n == 1)
+A.lootSource = corpse(9100, "0000005003")
+groupWindow({ { coin = "50 Cuivre" }, { 2589, 1 }, { 4306, 1 } }, { 2 })
+check("a corpse whose coin stays in it waits", w[9100].n == 1)
+groupWindow({ { coin = "50 Cuivre" }, { 4306, 1 } }, { 1 })
+check("its coin taken later counts it, with what it held when first opened", w[9100].n == 2 and w[9100].c == 154
+    and w[9100].i[2589][1] == 3 and w[9100].i[4306][1] == 1)
+A.lootSource = corpse(9100, "0000005004")
+groupWindow({ { coin = "10 Cuivre" } })
+run(0.5)
+slotCleared(1)
+groupWindow({ { 2589, 1 }, { coin = "10 Cuivre" } }, { 1 })
+check("a slot emptied a frame after its window closed, or another slot than the coin, counts nothing", w[9100].n == 2)
+A.lootSource = corpse(9104, "0000005451")
+groupWindow({ { coin = "10 Cuivre" } })
+slotCleared(1)
+check("a coin taken in the frame its window closes still counts", w[9104] and w[9104].n == 1)
+-- Corpses counted meanwhile do not push out one that waits for its coin.
+local waiting = corpse(9105, "0000005501")
+A.lootSource = waiting
+groupWindow({ { coin = "5 Cuivre" }, { 2589, 1 } }, { 2 })
+for i = 1, 60 do
+    A.lootSource = corpse(9106, ("00000056%02d"):format(i))
+    groupWindow({ { coin = "1 Cuivre" } }, { 1 })
+end
+A.lootSource = waiting
+groupWindow({ { coin = "5 Cuivre" } }, { 1 })
+check("a corpse waits for its coin however many others are counted meanwhile", w[9105].n == 1
+    and (w[9105].i[2589] or {})[1] == 1 and w[9106].n == 60)
+-- Taking a quest item before the coin may end its objective: the corpse is the chance it was when opened.
+A.quests = { { id = 367, objectives = { wants("Sang de sombredogue épais : 0/2"), wants("Sang de sombredogue\194\160: 4/5") } } }
+local chance = A.db.own.q["5000:2858"]
+local chances, drops = chance.n, chance.k
+A.lootSource = corpse(5000, "0000005401")
+A.loot = { { coin = "20 Cuivre" }, { 2858, 1, quest = true, name = "Sang de sombredogue" } }
+A.fire("LOOT_READY")
+slotCleared(2)
+A.quests[1].objectives[2].finished = true
+slotCleared(1)
+A.fire("LOOT_CLOSED")
+A.loot, A.quests = {}, {}
+check("a quest item that ends its objective before the coin is taken still counts as a chance taken",
+    chance.n == chances + 1 and chance.k == drops + 1 and w[5000].n == 1, chance.n .. " " .. chance.k)
+-- One window for several corpses: those the coin names are ours, each with its share.
+local ours1, ours2, theirs = corpse(9101, "0000005101"), corpse(9101, "0000005102"), corpse(9101, "0000005103")
+A.lootSource = nil
+groupWindow({ { coin = "30 Cuivre", from = { ours1, 10, ours2, 20 } }, { 2589, 2, from = { ours1, 1, ours2, 1 } },
+    { 4306, 1, from = { theirs, 1 } } }, { 1 })
+check("of several corpses in one window, those the coin names are counted, with their share", w[9101].n == 2
+    and w[9101].cn == 2 and w[9101].c == 30 and w[9101].i[2589][2] == 2 and w[9101].i[4306] == nil)
+for i, case in ipairs({ { "free for all", "method", 0 }, { "master loot", "method", 2 }, { "a raid", "raid", true },
+        { "a raid instance", "instance", "raid" } }) do
+    A[case[2]] = case[3]
+    A.lootSource = corpse(9102, "000000520" .. i)
+    groupWindow({ { coin = "10 Cuivre" } }, { 1 })
+    A[case[2]] = nil
+    check("nothing is counted under " .. case[1], w[9102] == nil and A.db.own.m[9102] == nil)
+end
+A.instance = "party"
+A.lootSource = corpse(9103, "0000005301")
+groupWindow({ { coin = "10 Cuivre" }, { 2589, 1 } }, { 1 })
+A.instance = nil
+check("in a dungeon as in the open world", w[9103] and w[9103].n == 1)
+local before = corpses()
+A.load(A.db)
+w = A.db.own.w
+check("the corpses looted in a group are kept over a reload", w[9100].n == 2 and corpses() == before)
+A.grouped, A.party = false, nil
+A.lootSource = corpse(9100, "0000005001")
+lootWindow({ { 2589, 1 } })
+check("a corpse counted in a group is not counted again alone", A.db.own.m[9100] == nil and w[9100].n == 2)
+A.lootSource = corpse(9100, "0000005005")
+lootWindow({ { 2589, 1 } })
+A.lootSource = nil
+check("alone again, a corpse is one of those looted alone", A.db.own.m[9100].n == 1 and w[9100].n == 2)
+tipLines = tipOf(9100)
+A.mouseover = nil
+check("the tooltip and the totals add up the corpses looted alone and in a group", tipLines[2]:find("fouillé 3×", 1, true)
+    and tipLines[3] == "  |cffffffffÉtoffe de lin|r = 3/3|cff8a8a8a x1.3|r" and A.ns.Totals().m == corpses(),
+    table.concat(tipLines, " | "))
+
 -- The log of groups ---------------------------------------------------------------
--- In a group nothing is counted; what the client tells of loot there is written down, line by line, for study.
+-- In every group what the client tells of loot there is written down, line by line, for study.
 
 local function glog() return A.env.RookieLedgerGroup end
 local function gline(back) return glog().l[#glog().l - (back or 0)] end
@@ -990,7 +1112,7 @@ A.loot = {}
 run(2)
 check("after the window: what the character's coin grew by, and the corpse", glog().n == 5
     and gline():match(" E purse=%+35 c8001%.%x+=0,1$"), gline())
-check("in a group the record still counts nothing", A.db.own.m[8001] == nil)
+check("a corpse whose coin stays in it is not counted", A.db.own.m[8001] == nil and A.db.own.w[8001] == nil)
 run(5)
 A.fire("UNIT_DIED", corpse(8001, "0000004003"))
 run(0.2)

@@ -162,7 +162,7 @@ local function InitDB()
         db.own = ns.Record.New()
     end
     local own = db.own
-    for _, section in ipairs({ "c", "s", "d", "g", "m", "q" }) do
+    for _, section in ipairs({ "c", "s", "d", "g", "m", "w", "q" }) do
         if type(own[section]) ~= "table" then
             own[section] = {}
         end
@@ -274,8 +274,10 @@ end
 function ns.Totals()
     local own = ns.db.own
     local crafts, disenchants, gathers, corpses = 0, 0, 0, 0
-    for _, creature in pairs(own.m) do
-        corpses = corpses + creature.n
+    for _, section in ipairs({ own.m, own.w }) do
+        for _, creature in pairs(section) do
+            corpses = corpses + creature.n
+        end
     end
     for _, node in pairs(own.g) do
         gathers = gathers + node.n

@@ -1,6 +1,7 @@
 -- Group.lua: while the player is in a group, writes down what the client tells of loot there, one line per thing
--- seen. It is a log for study, not part of the record: nothing in a group is counted (see Scan.lua), and what a
--- group's loot could be counted as is to be decided from these lines (docs/client-behaviour.md, section 11).
+-- seen. It is a log for study, not part of the record. What Scan.lua counts in a party under group loot was decided
+-- from these lines; what it leaves out (other loot methods, raids) is to be decided from them
+-- (docs/client-behaviour.md, section 11).
 --
 -- RookieLedgerGroup (one per WoW account, in the same saved file as RookieLedgerDB, so the companion app uploads it
 -- with the record and the site keeps it apart) holds:
@@ -22,8 +23,10 @@
 --   M   a chat line about coin: the amount, which of the client's texts it is.
 -- No name is written, of a character or of anything else: a member is "me", "party2" or "other", an item its
 -- number, a text of the client the name of its format. A corpse is the creature's number and a fingerprint of the
--- game's name for it ("c3100.9f3a61c2"): the same for every member who saw that corpse, which is how two members'
--- lines are put side by side, without the realm and the time of appearance that the name itself tells.
+-- game's name for it ("c3100.9f3a61c2"), without the realm and the time of appearance that the name itself tells.
+-- The fingerprint follows one corpse through one member's lines; two members' clients name the same corpse
+-- differently, so two members' lines are put side by side by the creature's number and the time, the clocks being
+-- set against each other by the rolls, whose numbers are the same for every member.
 -- Like the rest of the addon, it sends nothing: these lines leave the computer in the saved file only.
 local _, ns = ...
 
