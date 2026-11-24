@@ -14,6 +14,11 @@ const GLIDE = 260;                 // milliseconds a zoom or a jump takes
 const AT_ONCE = 8;                 // tiles asked of the server at the same time
 const RETRIES = 4;                 // times a tile the server refused is asked for again
 const CELL = 16;                   // window pixels: places of one kind nearer than this are drawn as one mark
+// Pixels of the picture, which holds 0.22 a yard (tools/maps/build_world.py): veins gathered nearer than about 8 yards
+// stood in one place. It is one vein seen by two players, or one place where the game puts a common ore and, now and
+// then, a rarer one instead (gold where iron or mithril stands, silver where tin does): one pin tells both.
+const SPOT = 1.8;
+const OTHER_ORE = "#ffd23f";       // the dot on the pin of a place that gave more than one ore
 // Where the three kinds each have a mark in one square, the marks are their places' middles and fall on each other:
 // each kind's is drawn a little aside, its own way, and small, so that all three show and the ground between them.
 const ASIDE = { creature: [0, -4.5], herbalism: [-4.5, 3.5], mining: [4.5, 3.5] };
@@ -37,8 +42,10 @@ let world = null;                  // world.json
 let names = { items: {}, creatures: {} };   // names.json
 let view = { x: 0, y: 0, scale: 1 };   // the pixel of the picture at the centre of the window, and window pixels per pixel of it
 let glide = null;                  // the view being moved to: { from, to, since }
-const pins = [];                   // { x, y (pixels of the picture), layer, id, key ("layer:id"), map, u, v, count }
-                                   // the key is made once: the search asks for it of every pin
+const pins = [];                   // { x, y (pixels of the picture), layer, id, kinds, keys, map, u, v, count }
+                                   // kinds: [{ id, count }], most gathered first (several only for veins), id that
+                                   // of the first; keys: "layer:id" of each kind, made once (the search asks for them
+                                   // of every pin); count: of them all
 const nodes = new Map();           // node id -> the API's Node
 const details = new Map();         // "creature:1674" -> the API's Creature, once asked for
 const layers = { mining: true, herbalism: true, creature: true };
@@ -154,7 +161,7 @@ function drawTiles(zoom) {
 }
 
 function shown(pin) {
-  return layers[pin.layer] && (!matches || matches.has(pin.key));
+  return layers[pin.layer] && found(pin);
 }
 
 // What is drawn is not every place. Far out, the places of one kind that fall in one small square are drawn as one
@@ -171,11 +178,11 @@ function marked() {
   if (list) return list;
   if (marks.size > 5) marks.clear();
   if (scale >= DEEPEST / 1.5) {
-    list = matches ? pins.filter((pin) => matches.has(pin.key)) : pins.slice();
+    list = pins.filter(found);
   } else {
     const size = CELL / scale, squares = new Map();
     for (const pin of pins) {
-      if (matches && !matches.has(pin.key)) continue;
+      if (!found(pin)) continue;
       const key = (Math.floor(pin.y / size) * 4194304 + Math.floor(pin.x / size)) * 4 + ORDER[pin.layer];
       const held = squares.get(key);
       if (!held) squares.set(key, pin);
@@ -245,10 +252,11 @@ function draw() {
     const aside = mark.n ? ASIDE[mark.layer] : NOT_ASIDE;
     const sx = mark.x * view.scale + dx + aside[0], sy = mark.y * view.scale + dy + aside[1];
     if (sx < -14 || sy < -14 || sx > w + 14 || sy > h + 14) continue;
-    stamp(mark.layer, sx, sy, mark.n ? 2.5 + Math.round(Math.min(2, Math.log2(mark.n) / 3)) / 2 : radius);
+    stamp(mark.layer, sx, sy, mark.n ? 2.5 + Math.round(Math.min(2, Math.log2(mark.n) / 3)) / 2 : radius,
+      !mark.n && mark.kinds.length > 1);
   }
   // The pin whose detail is open, over the others and larger, also where a mark stands for it and its neighbours.
-  if (chosen && shown(chosen)) paint(ctx, chosen.layer, ...screen(chosen), radius + 3, true);
+  if (chosen && shown(chosen)) paint(ctx, chosen.layer, ...screen(chosen), radius + 3, true, chosen.kinds.length > 1);
   float();
 }
 
@@ -256,8 +264,8 @@ function draw() {
 // of every frame took three times as long.
 const stamps = new Map();
 
-function stamp(layer, x, y, r) {
-  const ratio = window.devicePixelRatio || 1, key = `${layer}/${r}/${ratio}`;
+function stamp(layer, x, y, r, mixed) {
+  const ratio = window.devicePixelRatio || 1, key = `${layer}/${r}/${ratio}/${mixed ? 1 : 0}`;
   let image = stamps.get(key);
   if (!image) {
     const half = Math.ceil(r * 1.35 + 4);
@@ -265,7 +273,7 @@ function stamp(layer, x, y, r) {
     image.width = image.height = Math.ceil(2 * half * ratio);
     const c = image.getContext("2d");
     c.scale(image.width / (2 * half), image.width / (2 * half));
-    paint(c, layer, half, half, r, false);
+    paint(c, layer, half, half, r, false, mixed);
     stamps.set(key, image);
     image.half = half;
   }
@@ -274,7 +282,7 @@ function stamp(layer, x, y, r) {
     2 * image.half, 2 * image.half);
 }
 
-function paint(c, layer, x, y, r, strong) {
+function paint(c, layer, x, y, r, strong, mixed) {
   outline(c, layer, x, y, r);
   c.lineJoin = "round";
   c.lineWidth = strong ? 6 : 4;
@@ -284,6 +292,15 @@ function paint(c, layer, x, y, r, strong) {
   c.strokeStyle = "#fff";
   c.stroke();
   c.fillStyle = COLOURS[layer];
+  c.fill();
+  if (!mixed) return;
+  // At the upper right, where a diamond leaves room: a small dot for the other ore of the place.
+  c.beginPath();
+  c.arc(x + r * 0.8, y - r * 0.8, Math.max(2.5, r * 0.45), 0, 2 * Math.PI);
+  c.lineWidth = 2;
+  c.strokeStyle = "rgba(20,14,8,.85)";
+  c.stroke();
+  c.fillStyle = OTHER_ORE;
   c.fill();
 }
 
@@ -455,10 +472,15 @@ function item(id) {
 }
 
 // A vein or a herb has no name in the game's tables: it is named after what it most often gives.
-function nodeName(id) {
+function material(id) {
   const node = nodes.get(id);
   const most = node && node.materials.slice().sort((a, b) => b.times - a.times)[0];
-  return most ? `${KINDS[node.kind]} : ${item(most.item)[0]}` : `${node ? KINDS[node.kind] : "Gisement"} ${id}`;
+  return most ? item(most.item)[0] : null;
+}
+
+function nodeName(id) {
+  const node = nodes.get(id), named = material(id);
+  return named ? `${KINDS[node.kind]} : ${named}` : `${node ? KINDS[node.kind] : "Gisement"} ${id}`;
 }
 
 // A monster's name is known if the install the names were made from has met it; else its number stands for it.
@@ -467,7 +489,9 @@ function creatureName(id) {
 }
 
 function label(pin) {
-  return pin.layer === "creature" ? creatureName(pin.id) : nodeName(pin.id);
+  if (pin.layer === "creature") return creatureName(pin.id);
+  if (pin.kinds.length === 1) return nodeName(pin.id);
+  return `${KINDS[pin.layer]} : ${pin.kinds.map((k) => material(k.id) || k.id).join(" ou ")}`;
 }
 
 function rate(times, total) {
@@ -521,21 +545,36 @@ function yields(rows, total) {
 }
 
 // A monster's detail comes from the API: an answer that arrives once another card was opened is not shown.
-async function open(pin) {
+// A place of several ores shows one of them, kind (else the first the search names, else the most gathered), and
+// names the others, each a button that shows it instead.
+async function open(pin, kind) {
   const mine = ++opened;
   chosen = pin;
   schedule();
   const body = $("detail-body");
-  body.replaceChildren(element("h2", label(pin)), element("div", place(pin.map, pin.u, pin.v), "sub"));
-  $("detail").hidden = false;
   if (pin.layer !== "creature") {
-    const node = nodes.get(pin.id);
+    kind = kind || pin.kinds.find((k) => sought && kindFits(k.id)) || pin.kinds[0];
+    body.replaceChildren(element("h2", nodeName(kind.id)), element("div", place(pin.map, pin.u, pin.v), "sub"));
+    $("detail").hidden = false;
+    const others = pin.kinds.filter((k) => k !== kind);
+    if (others.length) {
+      const line = element("div", "Ce filon peut aussi être : ", "sub");
+      others.forEach((k, i) => {
+        const other = element("button", material(k.id) || nodeName(k.id), "other");
+        other.addEventListener("click", () => open(pin, k));
+        line.append(i ? ", " : "", other, ` (${k.count} fois sur ${pin.count})`);
+      });
+      body.append(line);
+    }
+    const node = nodes.get(kind.id);
     // A kind first gathered after the page asked for the kinds is not among them yet.
-    if (!node) { body.append(element("div", `Récolté ${pin.count}× ici.`, "sub")); return; }
-    body.append(element("div", `Récolté ${pin.count}× ici, ${node.gathers}× en tout, en ${node.place_count} endroits.`, "sub"),
+    if (!node) { body.append(element("div", `Récolté ${kind.count}× ici.`, "sub")); return; }
+    body.append(element("div", `Récolté ${kind.count}× ici, ${node.gathers}× en tout, en ${node.place_count} endroits.`, "sub"),
       table(["Donne", "Fréquence", ""], yields(node.materials, node.gathers)));
     return;
   }
+  body.replaceChildren(element("h2", label(pin)), element("div", place(pin.map, pin.u, pin.v), "sub"));
+  $("detail").hidden = false;
   const key = "creature:" + pin.id;
   if (!details.has(key)) {
     const loading = element("div", "Chargement…", "sub");
@@ -586,9 +625,14 @@ $("close").addEventListener("click", closeDetail);
 function count() {
   const totals = { mining: 0, herbalism: 0, creature: 0 };
   for (const pin of pins) {
-    if (!matches || matches.has(pin.key)) totals[pin.layer]++;
+    if (found(pin)) totals[pin.layer]++;
   }
   for (const [layer, n] of Object.entries(totals)) $("n-" + layer).textContent = n;
+}
+
+// Whether a pin is shown by the search: by one of its kinds, for a place of several ores.
+function found(pin) {
+  return !matches || pin.keys.some((key) => matches.has(key));
 }
 
 for (const box of document.querySelectorAll("[data-layer]")) {
@@ -596,12 +640,18 @@ for (const box of document.querySelectorAll("[data-layer]")) {
 }
 
 // A search matches a vein or a herb by what it gives, a monster by its name, its number or what it dropped (asked
-// of the API: its items are not loaded until then).
-function fits(pin) {
-  const { wanted, items } = sought;
-  if (pin.layer === "creature") return String(pin.id) === wanted || creatureName(pin.id).toLowerCase().includes(wanted);
-  const node = nodes.get(pin.id);
-  return Boolean(node && node.materials.some((m) => items.has(m.item))) || nodeName(pin.id).toLowerCase().includes(wanted);
+// of the API: its items are not loaded until then). Gives the keys of the pin that match.
+function fitting(pin) {
+  const { wanted } = sought;
+  if (pin.layer === "creature") {
+    return String(pin.id) === wanted || creatureName(pin.id).toLowerCase().includes(wanted) ? pin.keys : [];
+  }
+  return pin.kinds.filter((k) => kindFits(k.id)).map((k) => pin.layer + ":" + k.id);
+}
+
+function kindFits(id) {
+  const { wanted, items } = sought, node = nodes.get(id);
+  return Boolean(node && node.materials.some((m) => items.has(m.item))) || nodeName(id).toLowerCase().includes(wanted);
 }
 
 let searching = 0;
@@ -611,11 +661,11 @@ $("search").addEventListener("input", async (event) => {
   if (!wanted) { matches = sought = null; changed(); return; }
   const ids = Object.entries(names.items).filter(([, [name]]) => name.toLowerCase().includes(wanted)).map(([id]) => Number(id));
   sought = { wanted, items: new Set(ids) };
-  const found = new Set();
+  const fit = new Set();
   for (const pin of pins) {
-    if (fits(pin)) found.add(pin.layer + ":" + pin.id);
+    for (const key of fitting(pin)) fit.add(key);
   }
-  matches = found;
+  matches = fit;
   changed();
   // The monsters that dropped one of the items: one question per item, for the few items a search of three letters
   // or more names among those ever recorded.
@@ -623,7 +673,7 @@ $("search").addEventListener("input", async (event) => {
   const known = await knownItems();
   for (const id of ids.filter((id) => known.has(id)).slice(0, 12)) {
     try {
-      for (const creature of await all(`/creatures?item=${id}`)) found.add("creature:" + creature.id);
+      for (const creature of await all(`/creatures?item=${id}`)) fit.add("creature:" + creature.id);
     } catch (error) { /* the search then shows what it already found */ }
     if (mine !== searching) return;
     changed();
@@ -670,12 +720,38 @@ async function all(path) {
   return rows;
 }
 
-function pin(layer, id, map, u, v, count) {
-  const point = toWorld(map, u, v);
-  const made = { ...point, layer, id, key: layer + ":" + id, map, u, v, count };
+function pin(place, layer, kinds) {
+  const made = { ...place, layer, id: kinds[0].id, kinds, keys: kinds.map((k) => layer + ":" + k.id),
+    count: kinds.reduce((sum, k) => sum + k.count, 0) };
   pins.push(made);
   // A search typed while the places were still coming in also takes them.
-  if (matches && sought && fits(made)) matches.add(made.key);
+  if (matches && sought) for (const key of fitting(made)) matches.add(key);
+}
+
+// The places of veins nearer than SPOT to the most gathered among them are one: [{ x, y, map, u, v (its), kinds }].
+// The places are looked for in squares of SPOT's side, the one of the place and the eight around it.
+function spots(veins) {
+  const made = [], squares = new Map();
+  for (const vein of veins.sort((a, b) => b.count - a.count)) {
+    const sx = Math.floor(vein.x / SPOT), sy = Math.floor(vein.y / SPOT);
+    let spot = null;
+    for (let i = -1; i <= 1 && !spot; i++) {
+      for (let j = -1; j <= 1 && !spot; j++) {
+        spot = (squares.get(`${sx + i},${sy + j}`) || []).find((s) => Math.hypot(s.x - vein.x, s.y - vein.y) <= SPOT);
+      }
+    }
+    if (!spot) {
+      const { x, y, map, u, v } = vein;
+      spot = { x, y, map, u, v, kinds: [] };
+      made.push(spot);
+      squares.set(`${sx},${sy}`, [...(squares.get(`${sx},${sy}`) || []), spot]);
+    }
+    const kind = spot.kinds.find((k) => k.id === vein.id);
+    if (kind) kind.count += vein.count;
+    else spot.kinds.push({ id: vein.id, count: vein.count });
+  }
+  for (const spot of made) spot.kinds.sort((a, b) => b.count - a.count);
+  return made;
 }
 
 // Every place comes in one answer of the API, written short: per map and kind, three numbers a place (see /places
@@ -684,14 +760,20 @@ async function load() {
   const [kinds, places] = await Promise.all([all("/nodes"), get("/places")]);
   for (const node of kinds) nodes.set(node.id, node);
   let elsewhere = 0;
+  const veins = [];
   for (const map of places.maps) {
     for (const [layer, held] of [["mining", map.mining], ["herbalism", map.herbalism], ["creature", map.creatures]]) {
       for (const [id, flat] of Object.entries(held)) {
         if (!world.zones[map.id]) { elsewhere += flat.length / 3; continue; }
-        for (let i = 0; i < flat.length; i += 3) pin(layer, Number(id), map.id, flat[i] / 1000, flat[i + 1] / 1000, flat[i + 2]);
+        for (let i = 0; i < flat.length; i += 3) {
+          const u = flat[i] / 1000, v = flat[i + 1] / 1000, place = { ...toWorld(map.id, u, v), map: map.id, u, v };
+          if (layer === "mining") veins.push({ ...place, id: Number(id), count: flat[i + 2] });
+          else pin(place, layer, [{ id: Number(id), count: flat[i + 2] }]);
+        }
       }
     }
   }
+  for (const { kinds: held, ...place } of spots(veins)) pin(place, "mining", held);
   changed();
   return elsewhere;
 }

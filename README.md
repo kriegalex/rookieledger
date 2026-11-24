@@ -315,8 +315,11 @@ document stay open. The service limits no one's rate itself; do that in the reve
 `site/` is a static page that shows the read API's places on the game's own maps, as one picture of the world
 that can be zoomed and moved, from both continents down to a zone: veins, herbs and monsters as points, with what
 each gave when one is clicked. Far out, the places of one kind that lie close together are drawn as one mark; a
-click on it comes closer, until they are apart. It reads the API from the visitor's browser, every place in one
-request (`/v1/places`); the address is the `API` constant at the top of `site/app.js`.
+click on it comes closer, until they are apart. Veins gathered within about 8 yards of each other are one pin, of
+whatever kinds: the game puts a rarer ore, now and then, where a common one stands (gold where iron or mithril does,
+silver where tin does). A pin that gave more than one ore has a yellow dot, and its card names the other ores. It
+reads the API from the visitor's browser, every place in one request (`/v1/places`); the address is the `API` constant
+at the top of `site/app.js`.
 
 The pictures and the names are not in the repository: they are Blizzard's, and are made from a game install.
 
